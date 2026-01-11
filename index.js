@@ -111,6 +111,290 @@ function hideLoader(delay = 0) {
   }, delay + EXIT_DURATION);
 }
 
+/* ==========================================================================
+   CUSTOM CURSOR
+   ========================================================================== */
+
+function initCustomCursor() {
+  if (window.__customCursorInit) return;
+  window.__customCursorInit = true;
+
+  gsap.set(".cursor", { xPercent: -50, yPercent: -50 });
+
+  const xTo = gsap.quickTo(".cursor", "x", { duration: 0.6, ease: "power3" });
+  const yTo = gsap.quickTo(".cursor", "y", { duration: 0.6, ease: "power3" });
+
+  window.addEventListener("mousemove", (e) => {
+    xTo(e.clientX);
+    yTo(e.clientY);
+  });
+}
+
+/* ==========================================================================
+   NAV MOBILE
+   ========================================================================== */
+
+function initMobileNavigation() {
+  document.querySelectorAll('[data-navigation-status]').forEach((navEl) => {
+    if (navEl.dataset.scriptInitialized) return;
+    navEl.dataset.scriptInitialized = "true";
+
+    // Tema: vogliamo applicarlo all'intero wrapper mobile, non solo al background
+    const navWrap = navEl.querySelector(".nav_mobile_wrap") || navEl;
+    const navBg = navEl.querySelector(".nav_background") || document.querySelector(".nav_background");
+
+    const getStatus = () => navEl.getAttribute("data-navigation-status");
+    const setStatus = (value) => navEl.setAttribute("data-navigation-status", value);
+
+    // Durate tema (più lunghe, come richiesto)
+    const THEME_OPEN_DURATION = 0.5;
+    const THEME_CLOSE_DURATION = 0.75;
+    const THEME_EASE = "power2.out";
+
+    // Snapshot completo per ripristino perfetto a chiusura
+    let themeSnapshot = null;
+
+    /* ==========================
+       THEME HANDLER
+    ========================== */
+
+    const getThemeVars = (themeName) => {
+      try {
+        if (!window.colorThemes || typeof colorThemes.getTheme !== "function") return null;
+        return colorThemes.getTheme(themeName);
+      } catch {
+        return null;
+      }
+    };
+
+    const snapshotCurrentVars = (keys) => {
+      if (!navWrap || !keys || !keys.length) return null;
+      const cs = window.getComputedStyle(navWrap);
+      const out = {};
+      keys.forEach((k) => {
+        const v = cs.getPropertyValue(k);
+        if (v != null) out[k] = String(v).trim();
+      });
+      return out;
+    };
+
+    const tweenToVars = (vars, duration) => {
+      if (!navWrap || !vars) return;
+
+      // Se GSAP non c'è, fallback set immediato
+      if (typeof gsap === "undefined") {
+        Object.entries(vars).forEach(([k, v]) => {
+          navWrap.style.setProperty(k, v);
+        });
+        return;
+      }
+
+      gsap.killTweensOf(navWrap);
+      gsap.to(navWrap, {
+        ...vars,
+        duration,
+        ease: THEME_EASE,
+        overwrite: "auto",
+      });
+    };
+
+    const forceThemeBrand = () => {
+      const brandVars = getThemeVars("brand");
+      if (!brandVars) return;
+
+      tweenToVars(brandVars, THEME_OPEN_DURATION);
+      navWrap?.setAttribute?.("data-theme", "brand");
+
+      // Backdrop opzionale (se esiste): lo rendiamo visibile quando la nav è aperta
+      if (navBg && typeof gsap !== "undefined") {
+        gsap.killTweensOf(navBg);
+        gsap.to(navBg, { autoAlpha: 1, duration: THEME_OPEN_DURATION, ease: THEME_EASE, overwrite: "auto" });
+      } else if (navBg) {
+        navBg.style.opacity = "1";
+        navBg.style.visibility = "visible";
+      }
+    };
+
+    const restorePreviousTheme = () => {
+      if (!themeSnapshot || !navWrap) return;
+
+      // 1) Animazione di ritorno alle vars precedenti (se disponibili)
+      if (themeSnapshot.varsSnapshot) {
+        tweenToVars(themeSnapshot.varsSnapshot, THEME_CLOSE_DURATION);
+      }
+
+      // 2) A fine tween, ripristino ESATTO degli attributi/style originali
+      const finalizeRestore = () => {
+        try {
+          if (themeSnapshot.wrapStyle) navWrap.setAttribute("style", themeSnapshot.wrapStyle);
+          else navWrap.removeAttribute("style");
+
+          if (navBg) {
+            if (themeSnapshot.bgStyle) navBg.setAttribute("style", themeSnapshot.bgStyle);
+            else navBg.removeAttribute("style");
+          }
+
+          if (themeSnapshot.hadThemeAttr) {
+            if (themeSnapshot.themeAttr != null) navWrap.setAttribute("data-theme", themeSnapshot.themeAttr);
+            else navWrap.removeAttribute("data-theme");
+          } else {
+            navWrap.removeAttribute("data-theme");
+          }
+        } catch {}
+
+        themeSnapshot = null;
+      };
+
+      if (typeof gsap !== "undefined") {
+        gsap.delayedCall(THEME_CLOSE_DURATION, finalizeRestore);
+      } else {
+        finalizeRestore();
+      }
+
+      // Backdrop opzionale: lo riportiamo allo stato originale
+      if (navBg && typeof gsap !== "undefined") {
+        gsap.killTweensOf(navBg);
+        gsap.to(navBg, { autoAlpha: themeSnapshot?.bgAutoAlpha ?? 0, duration: THEME_CLOSE_DURATION, ease: THEME_EASE, overwrite: "auto" });
+      }
+    };
+
+    // Helpers per gestione stato nav + Lenis/scroll
+    const openNav = () => {
+      // Snapshot ad OGNI apertura (così non ti rimane "appeso" un vecchio snapshot)
+      const brandVars = getThemeVars("brand");
+      const brandKeys = brandVars ? Object.keys(brandVars) : [];
+
+      themeSnapshot = {
+        hadThemeAttr: !!navWrap?.hasAttribute?.("data-theme"),
+        themeAttr: navWrap?.getAttribute?.("data-theme"),
+        wrapStyle: navWrap?.getAttribute?.("style") || "",
+        bgStyle: navBg?.getAttribute?.("style") || "",
+        // valori attuali delle vars che andremo a sovrascrivere con "brand"
+        varsSnapshot: brandKeys.length ? snapshotCurrentVars(brandKeys) : null,
+        // stato attuale backdrop (se esiste)
+        bgAutoAlpha: navBg ? parseFloat(window.getComputedStyle(navBg).opacity || "0") : 0,
+      };
+
+      setStatus("active");
+      try {
+        pauseLenis();
+        lockScroll();
+      } catch {}
+
+      // 🔹 FORZA SEMPRE BRAND (animato)
+      forceThemeBrand();
+    };
+
+    const closeNav = () => {
+      setStatus("not-active");
+
+      try {
+        unlockScroll();
+        resumeLenis();
+      } catch {}
+
+      // 🔹 Reset: rimuove "brand" e ripristina ESATTAMENTE lo stato precedente
+      restorePreviousTheme();
+    };
+
+    navEl
+      .querySelectorAll('[data-navigation-toggle="toggle"]')
+      .forEach((toggleBtn) => {
+        toggleBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          const isOpen = getStatus() === "active";
+          isOpen ? closeNav() : openNav();
+        });
+      });
+
+    navEl
+      .querySelectorAll('[data-navigation-toggle="close"]')
+      .forEach((closeBtn) => {
+        closeBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          closeNav();
+        });
+      });
+
+    navEl.querySelectorAll(".nav_mobile_menu_link").forEach((link) => {
+      link.addEventListener("click", () => {
+        closeNav();
+      });
+    });
+
+    /* ==========================
+       ESC KEY (safe con Barba)
+    ========================== */
+
+    if (navEl.__escHandler) {
+      document.removeEventListener("keydown", navEl.__escHandler);
+    }
+
+    navEl.__escHandler = (e) => {
+      if (e.key === "Escape" && getStatus() === "active") {
+        closeNav();
+      }
+    };
+
+    document.addEventListener("keydown", navEl.__escHandler);
+  });
+}
+
+
+/* ==========================================================================
+   RESET WEBFLOW
+   ========================================================================== */
+
+function resetWebflow(data) {
+  if (typeof window.Webflow === "undefined") return;
+
+  try {
+
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(data.next.html, "text/html");
+    const webflowPageId = doc.querySelector("html")?.getAttribute("data-wf-page");
+    if (webflowPageId) {
+      document.documentElement.setAttribute("data-wf-page", webflowPageId);
+    }
+
+    window.Webflow.destroy?.();
+
+    setTimeout(() => {
+      try {
+        window.Webflow.ready?.();
+
+        const ix2 = window.Webflow.require?.("ix2");
+        if (ix2 && typeof ix2.init === "function") {
+          ix2.init();
+        } else {
+        }
+
+        const forms = window.Webflow.require?.("forms");
+        if (forms && typeof forms.ready === "function") {
+          forms.ready();
+        }
+
+        window.Webflow.redraw?.up?.();
+      } catch (innerErr) {
+        console.warn("⚠️ Errore durante il reset Webflow:", innerErr);
+      }
+    }, 100);
+
+  } catch (err) {
+    console.warn("⚠️ Errore nella reinizializzazione di Webflow:", err);
+  }
+}
+
+/* ==========================================================================
+   SIGNATURE STUDIO OLIMPO
+   ========================================================================== */
+function initSignature() {
+    console.log(
+    "%cCredits: Studio Olimpo | Above the ordinary – https://www.studioolimpo.it",
+    "background: #F8F6F1; color: #000; font-size: 12px; padding:10px 14px;"
+  );
+}
+
 /* =====================
    LENIS
 ===================== */
@@ -316,11 +600,247 @@ function preventSamePageClicks() {
     true
   );
 }
+
 // FOOTER YEAR
 function initDynamicYear(scope = document) {
   const root = getRoot(scope);
   root.querySelectorAll("[data-dynamic-year]").forEach((el) => {
     el.textContent = String(new Date().getFullYear());
+  });
+}
+
+/* ==========================================================================
+   FORM – SUCCESS CUSTOM TRANSITION (Webflow)
+   Dipendenza: jQuery (Webflow lo include di default)
+   ========================================================================== */
+
+function initFormSuccessTransition(scope = document) {
+  if (typeof window.jQuery === "undefined" || typeof window.$ === "undefined") {
+    return;
+  }
+
+  const $root = $(scope);
+  const $forms = $root.find(".w-form form");
+  if (!$forms.length) return;
+
+  const DEFAULT_REDIRECT_URL = "/";
+  const DEFAULT_REDIRECT_DELAY = 3500;
+  const DEFAULT_POLL_TIMEOUT = 8000;
+  const POLL_EVERY = 100;
+
+  function forceHideNativeMessages($container) {
+    $container.find(".w-form-done, .w-form-fail").each(function () {
+      this.style.setProperty("display", "none", "important");
+      this.style.setProperty("opacity", "0", "important");
+      this.style.setProperty("visibility", "hidden", "important");
+      this.style.setProperty("position", "absolute", "important");
+      this.style.setProperty("pointer-events", "none", "important");
+    });
+  }
+
+  forceHideNativeMessages($root);
+
+  function fadeInSuccess(successSection) {
+    // assicurati che sia sopra e non “sparisca” durante il cambio pagina
+    successSection.style.display = "flex";
+    successSection.style.pointerEvents = "auto";
+    successSection.style.position = "fixed";
+    successSection.style.inset = "0";
+    successSection.style.zIndex = "9999";
+
+    if (typeof gsap !== "undefined") {
+      gsap.killTweensOf(successSection);
+      gsap.set(successSection, { autoAlpha: 0 });
+      gsap.to(successSection, { autoAlpha: 1, duration: 0.9, ease: "power2.out" });
+    } else {
+      successSection.classList.add("is-visible");
+    }
+  }
+
+  function fadeOutSuccess(successSection, onComplete) {
+    if (!successSection) return;
+
+    if (typeof gsap !== "undefined") {
+      // evita conflitti con animazioni residue
+      gsap.killTweensOf(successSection);
+
+      // stato coerente prima dell’uscita
+      gsap.set(successSection, {
+        willChange: "opacity, transform, filter",
+        transformOrigin: "50% 50%",
+        pointerEvents: "none",
+      });
+
+      const tl = gsap.timeline({
+        onComplete: () => {
+          successSection.style.display = "none";
+          // pulizia props per evitare accumuli tra pagine
+          successSection.style.willChange = "";
+          successSection.style.filter = "";
+          successSection.style.transform = "";
+          if (typeof onComplete === "function") onComplete();
+        },
+      });
+
+      tl.to(successSection, {
+        duration: 0.9,
+        ease: "expo.inOut",
+        autoAlpha: 0,
+        y: 10,
+        filter: "blur(1px)",
+      });
+
+      return;
+    }
+
+    // fallback senza GSAP
+    successSection.style.pointerEvents = "none";
+    successSection.style.transition = "opacity 650ms cubic-bezier(0.16, 1, 0.3, 1)";
+    successSection.style.opacity = "0";
+
+    setTimeout(() => {
+      successSection.style.display = "none";
+      successSection.style.transition = "";
+      successSection.style.opacity = "";
+      if (typeof onComplete === "function") onComplete();
+    }, 650);
+  }
+
+  /**
+   * Obiettivo:
+   * - avviare la navigazione prima
+   * - dissolvere il success SOLO quando la nuova pagina è già entrata
+   */
+  function navigateThenHideOverlay(redirectUrl, successSection) {
+    // se non c’è Barba, fallback classico: naviga e basta
+    if (typeof barba === "undefined" || typeof barba.go !== "function") {
+      // qui non puoi garantire “già in home” prima del fade, perché la navigazione hard ricarica
+      window.location.href = redirectUrl;
+      return;
+    }
+
+    let done = false;
+
+    const safeFadeOut = () => {
+      if (done) return;
+      done = true;
+      fadeOutSuccess(successSection);
+    };
+
+    // Fallback safety: se per qualunque motivo non ricevi hook/promise, non restare bloccato
+    const SAFETY_TIMEOUT = 4000;
+    const safetyTimer = setTimeout(safeFadeOut, SAFETY_TIMEOUT);
+
+    // 1) Prova via Promise (più semplice e di solito perfetta)
+    let maybePromise;
+    try {
+      maybePromise = barba.go(redirectUrl);
+    } catch (e) {
+      clearTimeout(safetyTimer);
+      // se barba.go esplode, fallback hard
+      window.location.href = redirectUrl;
+      return;
+    }
+
+    // se barba.go ritorna una Promise, aspetta la fine della transizione
+    if (maybePromise && typeof maybePromise.then === "function") {
+      maybePromise
+        .then(() => {
+          clearTimeout(safetyTimer);
+          safeFadeOut(); // ora sei già nella nuova pagina
+        })
+        .catch(() => {
+          clearTimeout(safetyTimer);
+          // in caso di errore, almeno non restare con overlay bloccato
+          safeFadeOut();
+        });
+
+      return;
+    }
+
+    // 2) Se non c’è Promise, usa hook one-shot afterEnter
+    const afterEnterOnce = () => {
+      clearTimeout(safetyTimer);
+      safeFadeOut();
+      barba.hooks.afterEnter(afterEnterOnce); // Barba non ha "off" ufficiale in tutte le build, quindi re-hook innocuo
+    };
+
+    if (barba.hooks && typeof barba.hooks.afterEnter === "function") {
+      barba.hooks.afterEnter(afterEnterOnce);
+    }
+  }
+
+  function showSuccessAndRedirect($form) {
+    if ($form.data("__successHandled")) return;
+    $form.data("__successHandled", true);
+
+    const $wForm = $form.closest(".w-form");
+    const $fail = $wForm.find(".w-form-fail");
+    if ($fail.is(":visible")) return;
+
+    forceHideNativeMessages($wForm);
+    $form.show();
+
+    const successSection = document.querySelector("#success-form");
+    if (!successSection) return;
+
+    fadeInSuccess(successSection);
+
+    const redirectUrl =
+      successSection.getAttribute("data-success-redirect") || DEFAULT_REDIRECT_URL;
+
+    const redirectDelay =
+      Number(successSection.getAttribute("data-success-redirect-delay")) ||
+      DEFAULT_REDIRECT_DELAY;
+
+    // Qui mantieni il tuo “tempo di lettura” del success.
+    // Quando scade, NON dissolvi subito: avvii Barba e dissolvi solo a transizione finita.
+    setTimeout(() => {
+      navigateThenHideOverlay(redirectUrl, successSection);
+    }, redirectDelay);
+  }
+
+  function waitForWebflowSuccess($form) {
+    const $wForm = $form.closest(".w-form");
+    const start = Date.now();
+
+    const tick = () => {
+      const $success = $wForm.find(".w-form-done");
+      const $fail = $wForm.find(".w-form-fail");
+
+      const successStyle = $success.attr("style") || "";
+      const hasSuccessStyle =
+        successStyle.includes("display: block") || successStyle.includes("display:block");
+
+      const failStyle = $fail.attr("style") || "";
+      const hasFailStyle =
+        failStyle.includes("display: block") || failStyle.includes("display:block");
+
+      if (hasFailStyle) return;
+
+      if ($success.length && hasSuccessStyle) {
+        showSuccessAndRedirect($form);
+        return;
+      }
+
+      if (Date.now() - start > DEFAULT_POLL_TIMEOUT) return;
+
+      setTimeout(tick, POLL_EVERY);
+    };
+
+    tick();
+  }
+
+  $forms.each(function () {
+    const $form = $(this);
+    if ($form.data("bound-success")) return;
+    $form.data("bound-success", true);
+
+    $form.on("submit", function () {
+      const $wForm = $form.closest(".w-form");
+      forceHideNativeMessages($wForm);
+      waitForWebflowSuccess($form);
+    });
   });
 }
 
@@ -736,8 +1256,12 @@ if (typeof barba !== "undefined") barba.init({
         hideLoader(2000);
 
         preventSamePageClicks();
+        initCustomCursor();
+        initSignature();
         initDynamicYear(next?.container || document);
+        initFormSuccessTransition(next?.container || document);
         initLenis();
+        initMobileNavigation();
         unlockScroll();
         try {
           window.lenis?.start?.();
@@ -797,6 +1321,7 @@ if (typeof barba !== "undefined") barba.init({
         initSwiperSliders(next.container);
         initAccordions(next.container);
         initDynamicYear(next.container);
+        initFormSuccessTransition(next.container);
         CssRetriggerAnimationsOnScroll(next.container);
 
         // removed refreshAfterEnter(0.01);
@@ -813,6 +1338,7 @@ if (typeof barba !== "undefined") barba.init({
       after({ current }) {
         unlockScroll();
         resumeLenis();
+        initMobileNavigation();
         document.documentElement.classList.remove("is-transitioning");
         // Cleanup quando il current è già sparito, evita snap visibili prima della transizione
         destroySwiperSliders(current?.container || document);
@@ -838,12 +1364,19 @@ if (window.barba && window.barba.hooks) {
     forceNextPageToTop();
   });
 
+
+  barba.hooks.enter((data) => {
+  if (typeof resetWebflow === "function") resetWebflow(data);
+  });
+
+
   barba.hooks.beforeLeave(() => {
   });
 
   barba.hooks.afterEnter(() => {
     preventSamePageClicks();
     initDynamicYear(document);
+    initFormSuccessTransition(document);
     CssRetriggerAnimationsOnScroll(document);
     // evita micro-salti a fine transizione: riallinea Lenis sullo scroll attuale
     initLenis();
