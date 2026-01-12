@@ -87,28 +87,136 @@ function pruneEmptySlides(wrapper) {
 
 function hideLoader(delay = 0) {
   const loader = document.querySelector(".loader_wrap");
-  if (!loader) return;
 
-  if (loader.__isExiting) return;
-  loader.__isExiting = true;
-
-  const EXIT_DURATION = 800;
-
-  // Avvia animazione di uscita
-  setTimeout(() => {
-    loader.classList.add("is-exiting");
-  }, delay);
-
-  // Fine loader
-  setTimeout(() => {
-    loader.remove();
-
-    // 🔑 sblocca le animazioni del sito
-    document.documentElement.classList.remove("is-loading");
-
+  // Se il loader non esiste, consideralo già concluso
+  if (!loader) {
     __loaderDone = true;
-    document.dispatchEvent(new CustomEvent("loader:done"));
-  }, delay + EXIT_DURATION);
+    document.documentElement.classList.remove("is-loading");
+    try {
+      document.dispatchEvent(new CustomEvent("loader:done"));
+    } catch {}
+    return Promise.resolve();
+  }
+
+  // Idempotente: se già in corso o finito, ritorna la stessa promise
+  if (loader.__promise) return loader.__promise;
+
+  const hasGSAP = typeof gsap !== "undefined";
+
+  // Normalizza delay: supporta sia ms che seconds (se passa 2 => 2s)
+  const delayMs = Number(delay) || 0;
+  const exitDelaySec = delayMs >= 50 ? delayMs / 1000 : delayMs;
+
+  const EXIT_DURATION = 0.8; // secondi
+
+  loader.__isExiting = false;
+
+  loader.__promise = new Promise((resolve) => {
+    const finalize = () => {
+      try {
+        loader.remove();
+      } catch {}
+
+      // 🔑 safety: se per qualunque motivo non fosse già stato rimosso
+      document.documentElement.classList.remove("is-loading");
+
+      __loaderDone = true;
+      try {
+        document.dispatchEvent(new CustomEvent("loader:done"));
+      } catch {}
+
+      resolve();
+    };
+
+    // Se GSAP non c'è, fallback al comportamento precedente
+    if (!hasGSAP) {
+      setTimeout(() => {
+        loader.classList.add("is-exiting");
+        // Sblocca subito le animazioni del sito quando parte l'uscita
+        document.documentElement.classList.remove("is-loading");
+      }, delayMs);
+
+      setTimeout(finalize, delayMs + EXIT_DURATION * 1000);
+      return;
+    }
+
+    // --- GSAP: riproduce le animazioni CSS che avevi (logo-in + text-in + loader-out)
+
+    const paths = loader.querySelectorAll(".u-svg path");
+    const text = loader.querySelector(".loader_layout .u-text");
+
+    // Stato iniziale anti-flash (non forziamo y: evita di sovrascrivere transform già presenti)
+    gsap.set(loader, { autoAlpha: 1 });
+    if (paths && paths.length) gsap.set(paths, { autoAlpha: 0 });
+    if (text) gsap.set(text, { autoAlpha: 0 });
+
+    const tl = gsap.timeline({
+      defaults: { ease: "power2.out" },
+      onComplete: () => {
+        // Non fare nulla: l'uscita è schedulata separatamente
+      },
+    });
+
+    // 1) LOGO-IN: opacity stagger (equivalente a: 1s ease-out, stagger 0.05s, start 0.6s)
+    if (paths && paths.length) {
+      tl.to(
+        paths,
+        {
+          duration: 1,
+          autoAlpha: 1,
+          stagger: 0.04,
+          ease: "power2.out",
+        },
+        0.3
+      );
+    }
+
+    // 2) TEXT-IN: opacity (equivalente a: 1s ease-out 1.4s)
+    if (text) {
+      tl.to(
+        text,
+        {
+          duration: 1,
+          autoAlpha: 1,
+          ease: "power2.out",
+        },
+        1.4
+      );
+    }
+
+    // 3) USCITA: dopo exitDelaySec, fade + translateY(-1rem)
+    const startExit = () => {
+      if (loader.__isExiting) return;
+      loader.__isExiting = true;
+
+      // 🔑 sblocca subito le animazioni del sito quando parte l'uscita
+      document.documentElement.classList.remove("is-loading");
+
+      // 🔔 Hook per orchestrare overlap con la Hero
+      try {
+        document.dispatchEvent(new CustomEvent("loader:exit-start"));
+      } catch {}
+
+      // compat: mantieni la classe per eventuali stili collaterali
+      loader.classList.add("is-exiting");
+      loader.style.pointerEvents = "none";
+
+      gsap.killTweensOf(loader);
+      gsap.to(loader, {
+        duration: EXIT_DURATION,
+        autoAlpha: 0,
+        // usa unità relative: evita hardcode px e rispetta il tuo "-1rem"
+        y: "-1rem",
+        ease: "power1.inOut",
+        onComplete: finalize,
+      });
+    };
+
+    // Schedula uscita dopo il delay richiesto
+    gsap.delayedCall(Math.max(0, exitDelaySec), startExit);
+  });
+
+  return loader.__promise;
 }
 
 /* ==========================================================================
@@ -130,6 +238,97 @@ function initCustomCursor() {
   });
 }
 
+
+/* ==========================================================================
+   HIDE/SHOW DESKTOP NAVBAR ON SCROLL
+   ========================================================================== */
+
+function initDetectScrollingDirection() {
+  if (typeof gsap === "undefined") return;
+
+  // Se esiste una bind precedente (Barba afterEnter), la smonto prima
+  if (typeof window.__scrollDirCleanup === "function") {
+    try {
+      window.__scrollDirCleanup();
+    } catch {}
+    window.__scrollDirCleanup = null;
+  }
+
+  let lastScrollY = window.scrollY || 0;
+
+  const desktopNav = document.querySelector(".nav_desktop_wrap");
+  if (!desktopNav) return;
+
+  const mm = gsap.matchMedia();
+
+  mm.add(
+    {
+      isDesktop: "(min-width: 64em)",
+      isMobile: "(max-width: 63.999em)",
+    },
+    (ctx) => {
+      let ticking = false;
+
+      const onScroll = () => {
+        if (ticking) return;
+        ticking = true;
+
+        requestAnimationFrame(() => {
+          const y = window.scrollY || 0;
+
+          // Micro-soglia per ignorare jitter
+          if (Math.abs(y - lastScrollY) < 20) {
+            ticking = false;
+            return;
+          }
+
+          const direction = y > lastScrollY ? "down" : "up";
+          const started = y > 50;
+
+          lastScrollY = y;
+
+          document.body.setAttribute("data-scrolling-direction", direction);
+          document.body.setAttribute("data-scrolling-started", String(started));
+
+          // Solo desktop: nascondi/mostra intera nav
+          if (ctx.conditions.isDesktop) {
+            if (direction === "down" && started) {
+              gsap.to(desktopNav, {
+                yPercent: -150,
+                duration: 0.9,
+                ease: "power3.out",
+                overwrite: true,
+              });
+            } else if (direction === "up") {
+              gsap.to(desktopNav, {
+                yPercent: 0,
+                duration: 0.75,
+                ease: "power2.out",
+                overwrite: true,
+              });
+            }
+          }
+
+          ticking = false;
+        });
+      };
+
+      window.addEventListener("scroll", onScroll, { passive: true });
+
+      // Cleanup automatico quando matchMedia cambia o quando reinizializziamo (Barba)
+      return () => window.removeEventListener("scroll", onScroll);
+    }
+  );
+
+  // Salvo cleanup globale per evitare listener duplicati tra navigazioni Barba
+  window.__scrollDirCleanup = () => {
+    try {
+      mm.revert();
+    } catch {}
+  };
+}
+
+
 /* ==========================================================================
    NAV MOBILE
    ========================================================================== */
@@ -143,16 +342,134 @@ function initMobileNavigation() {
     const navWrap = navEl.querySelector(".nav_mobile_wrap") || navEl;
     const navBg = navEl.querySelector(".nav_background") || document.querySelector(".nav_background");
 
+    // Shift verticale del contenuto pagina (sotto la nav) quando la nav mobile è aperta
+    // Priorità target:
+    // 1) attributo dedicato (se vuoi controllarlo da Webflow)
+    // 2) container Barba attuale
+    // 3) main
+    // 4) fallback: body
+    const shiftTarget =
+      document.querySelector("[data-nav-shift-target]") ||
+      document.querySelector('[data-barba="container"]') ||
+      document.querySelector("main") ||
+      document.body;
+
+    // px di shift, configurabile su navEl via attribute: data-nav-shift-y="16"
+    const SHIFT_Y = parseFloat(navEl.getAttribute("data-nav-shift-y") || "16");
+
+    // Durate/ease (luxury, morbide) per accompagnare la discesa/salita del pannello
+    const SHIFT_OPEN_DURATION = 0.95;
+    const SHIFT_CLOSE_DURATION = 0.85;
+    const SHIFT_OPEN_EASE = "power3.out";
+    const SHIFT_CLOSE_EASE = "power2.inOut";
+
+    // Micro overlap: in chiusura il rientro parte leggermente dopo
+    const SHIFT_CLOSE_DELAY = 0.12;
+
     const getStatus = () => navEl.getAttribute("data-navigation-status");
     const setStatus = (value) => navEl.setAttribute("data-navigation-status", value);
+
 
     // Durate tema (più lunghe, come richiesto)
     const THEME_OPEN_DURATION = 0.5;
     const THEME_CLOSE_DURATION = 0.75;
+    const PANEL_CLOSE_DURATION = 0.9; // match CSS --panel-close (900ms)
+    const PANEL_CLOSE_OPACITY_DELAY = 0.1; // opacity delay
+    const THEME_RESET_OVERLAP = 0.65; // % della chiusura a cui iniziare il reset tema
     const THEME_EASE = "power2.out";
 
+    /* ==========================
+       SHIFT HANDLER (contenuto pagina)
+    ========================== */
+
+    const shiftPageDown = () => {
+      if (!shiftTarget) return;
+
+      if (typeof gsap !== "undefined") {
+        gsap.killTweensOf(shiftTarget);
+        gsap.to(shiftTarget, {
+          y: SHIFT_Y,
+          duration: SHIFT_OPEN_DURATION,
+          ease: SHIFT_OPEN_EASE,
+          overwrite: "auto",
+        });
+        return;
+      }
+
+      // fallback senza GSAP
+      shiftTarget.style.transform = `translate3d(0, ${SHIFT_Y}px, 0)`;
+    };
+
+    const shiftPageUp = (delaySec = 0) => {
+      if (!shiftTarget) return;
+
+      if (typeof gsap !== "undefined") {
+        gsap.killTweensOf(shiftTarget);
+        gsap.to(shiftTarget, {
+          y: 0,
+          delay: Math.max(0, Number(delaySec) || 0),
+          duration: SHIFT_CLOSE_DURATION,
+          ease: SHIFT_CLOSE_EASE,
+          overwrite: "auto",
+          // non puliamo transform per non rompere altre animazioni GSAP eventuali
+        });
+        return;
+      }
+
+      // fallback senza GSAP
+      setTimeout(() => {
+        shiftTarget.style.transform = "";
+      }, Math.max(0, Number(delaySec) || 0) * 1000);
+    };
+
+    // Anti-spam click: impedisce nuovi toggle finché open/close non ha finito
+    let isNavTransitioning = false;
+
+    const getToggleButtons = () =>
+      Array.from(navEl.querySelectorAll('[data-navigation-toggle="toggle"], [data-navigation-toggle="close"]'));
+
+    const setTogglesEnabled = (enabled) => {
+      const btns = getToggleButtons();
+      btns.forEach((btn) => {
+        // compatibile con <a>, <button>, ecc.
+        btn.style.pointerEvents = enabled ? "" : "none";
+        btn.style.cursor = enabled ? "" : "wait";
+        if (btn.tagName === "BUTTON") btn.disabled = !enabled;
+        btn.setAttribute("aria-disabled", enabled ? "false" : "true");
+      });
+    };
+
+    const withNavTransitionLock = (fn, durationSeconds) => {
+      if (isNavTransitioning) return;
+      isNavTransitioning = true;
+      setTogglesEnabled(false);
+
+      try {
+        fn?.();
+      } catch {
+        // se qualcosa esplode, riabilita comunque
+        isNavTransitioning = false;
+        setTogglesEnabled(true);
+        return;
+      }
+
+      const unlock = () => {
+        isNavTransitioning = false;
+        setTogglesEnabled(true);
+      };
+
+      const ms = Math.max(0, Number(durationSeconds || 0)) * 1000;
+
+      if (typeof gsap !== "undefined" && typeof gsap.delayedCall === "function") {
+        gsap.delayedCall(Math.max(0, Number(durationSeconds || 0)), unlock);
+      } else {
+        setTimeout(unlock, ms);
+      }
+    };
+
     // Snapshot completo per ripristino perfetto a chiusura
-    let themeSnapshot = null;
+    // Nota: lo teniamo su navEl per non “perderlo” tra close/open e per evitare race con delayedCall.
+    navEl.__themeSnapshot = navEl.__themeSnapshot || null;
 
     /* ==========================
        THEME HANDLER
@@ -215,86 +532,174 @@ function initMobileNavigation() {
       }
     };
 
-    const restorePreviousTheme = () => {
-      if (!themeSnapshot || !navWrap) return;
+    const restorePreviousTheme = (snap = navEl.__themeSnapshot) => {
+      // Se non ho snapshot, faccio comunque un reset “hard” (pulito) dei marker/override
+      if (!navWrap) return;
 
-      // 1) Animazione di ritorno alle vars precedenti (se disponibili)
-      if (themeSnapshot.varsSnapshot) {
-        tweenToVars(themeSnapshot.varsSnapshot, THEME_CLOSE_DURATION);
+      // Copia locale per evitare che `navEl.__themeSnapshot` venga mutato durante i delayedCall
+      const s = snap;
+
+      // Caso limite: non ho nulla da ripristinare, quindi pulisco il minimo indispensabile
+      if (!s) {
+        try {
+          navWrap.removeAttribute("data-theme");
+          navWrap.removeAttribute("style");
+        } catch {}
+        if (navBg) {
+          try {
+            navBg.removeAttribute("style");
+          } catch {}
+        }
+        return;
       }
 
-      // 2) A fine tween, ripristino ESATTO degli attributi/style originali
+      // 1) Animazione di ritorno alle vars precedenti (se disponibili)
+      if (s.varsSnapshot) {
+        tweenToVars(s.varsSnapshot, THEME_CLOSE_DURATION);
+      }
+
+      // 2) Backdrop: ritorna allo stato originale con tween coerente
+      if (navBg && typeof gsap !== "undefined") {
+        gsap.killTweensOf(navBg);
+        gsap.to(navBg, {
+          autoAlpha: Number.isFinite(s.bgAutoAlpha) ? s.bgAutoAlpha : 0,
+          duration: THEME_CLOSE_DURATION,
+          ease: THEME_EASE,
+          overwrite: "auto",
+        });
+      }
+
+      // 3) A fine tween, ripristino ESATTO degli attributi/style originali
       const finalizeRestore = () => {
         try {
-          if (themeSnapshot.wrapStyle) navWrap.setAttribute("style", themeSnapshot.wrapStyle);
+          // wrapper style
+          if (s.wrapStyle) navWrap.setAttribute("style", s.wrapStyle);
           else navWrap.removeAttribute("style");
 
+          // backdrop style
           if (navBg) {
-            if (themeSnapshot.bgStyle) navBg.setAttribute("style", themeSnapshot.bgStyle);
+            if (s.bgStyle) navBg.setAttribute("style", s.bgStyle);
             else navBg.removeAttribute("style");
           }
 
-          if (themeSnapshot.hadThemeAttr) {
-            if (themeSnapshot.themeAttr != null) navWrap.setAttribute("data-theme", themeSnapshot.themeAttr);
+          // data-theme
+          if (s.hadThemeAttr) {
+            if (s.themeAttr != null && s.themeAttr !== "") navWrap.setAttribute("data-theme", s.themeAttr);
             else navWrap.removeAttribute("data-theme");
           } else {
             navWrap.removeAttribute("data-theme");
           }
         } catch {}
 
-        themeSnapshot = null;
+        // IMPORTANT: pulisco lo snapshot solo se è ancora quello corrente
+        if (navEl.__themeSnapshot === s) navEl.__themeSnapshot = null;
       };
 
       if (typeof gsap !== "undefined") {
         gsap.delayedCall(THEME_CLOSE_DURATION, finalizeRestore);
       } else {
-        finalizeRestore();
-      }
-
-      // Backdrop opzionale: lo riportiamo allo stato originale
-      if (navBg && typeof gsap !== "undefined") {
-        gsap.killTweensOf(navBg);
-        gsap.to(navBg, { autoAlpha: themeSnapshot?.bgAutoAlpha ?? 0, duration: THEME_CLOSE_DURATION, ease: THEME_EASE, overwrite: "auto" });
+        setTimeout(finalizeRestore, THEME_CLOSE_DURATION * 1000);
       }
     };
 
     // Helpers per gestione stato nav + Lenis/scroll
     const openNav = () => {
-      // Snapshot ad OGNI apertura (così non ti rimane "appeso" un vecchio snapshot)
-      const brandVars = getThemeVars("brand");
-      const brandKeys = brandVars ? Object.keys(brandVars) : [];
+      // durata di lock: deve coprire l’intera apertura (tema + eventuali animazioni pannello)
+      const LOCK_DUR = Math.max(THEME_OPEN_DURATION, 0.6);
 
-      themeSnapshot = {
-        hadThemeAttr: !!navWrap?.hasAttribute?.("data-theme"),
-        themeAttr: navWrap?.getAttribute?.("data-theme"),
-        wrapStyle: navWrap?.getAttribute?.("style") || "",
-        bgStyle: navBg?.getAttribute?.("style") || "",
-        // valori attuali delle vars che andremo a sovrascrivere con "brand"
-        varsSnapshot: brandKeys.length ? snapshotCurrentVars(brandKeys) : null,
-        // stato attuale backdrop (se esiste)
-        bgAutoAlpha: navBg ? parseFloat(window.getComputedStyle(navBg).opacity || "0") : 0,
-      };
+      withNavTransitionLock(() => {
+        // Snapshot ad OGNI apertura (così non ti rimane "appeso" un vecchio snapshot)
+        const brandVars = getThemeVars("brand");
+        const brandKeys = brandVars ? Object.keys(brandVars) : [];
 
-      setStatus("active");
-      try {
-        pauseLenis();
-        lockScroll();
-      } catch {}
+        navEl.__themeSnapshot = {
+          hadThemeAttr: !!navWrap?.hasAttribute?.("data-theme"),
+          themeAttr: navWrap?.getAttribute?.("data-theme"),
+          wrapStyle: navWrap?.getAttribute?.("style") || "",
+          bgStyle: navBg?.getAttribute?.("style") || "",
+          // valori attuali delle vars che andremo a sovrascrivere con "brand"
+          varsSnapshot: brandKeys.length ? snapshotCurrentVars(brandKeys) : null,
+          // stato attuale backdrop (se esiste)
+          bgAutoAlpha: navBg ? parseFloat(window.getComputedStyle(navBg).opacity || "0") : 0,
+        };
 
-      // 🔹 FORZA SEMPRE BRAND (animato)
-      forceThemeBrand();
+        setStatus("active");
+        try {
+          pauseLenis();
+          lockScroll();
+        } catch {}
+
+        // 🔹 FORZA SEMPRE BRAND (animato)
+        forceThemeBrand();
+        // 🔹 SHIFT contenuto pagina verso il basso (elegante)
+        shiftPageDown();
+      }, LOCK_DUR);
     };
 
     const closeNav = () => {
-      setStatus("not-active");
+      const CLOSE_TOTAL_DURATION = PANEL_CLOSE_DURATION + PANEL_CLOSE_OPACITY_DELAY;
+      const CLOSE_THEME_RESET_AT = CLOSE_TOTAL_DURATION * THEME_RESET_OVERLAP;
 
+      const LOCK_DUR = Math.max(
+        CLOSE_TOTAL_DURATION,
+        THEME_CLOSE_DURATION,
+        0.6
+      );
+
+      withNavTransitionLock(() => {
+        setStatus("not-active");
+        // 🔹 Rientro contenuto pagina (micro overlap)
+        shiftPageUp(SHIFT_CLOSE_DELAY);
+
+        try {
+          unlockScroll();
+          resumeLenis();
+        } catch {}
+
+        // Ritarda il reset tema fino a pannello completamente chiuso
+        const snap = navEl.__themeSnapshot;
+
+        if (typeof gsap !== "undefined") {
+          gsap.delayedCall(CLOSE_THEME_RESET_AT, () => {
+            restorePreviousTheme(snap);
+          });
+        } else {
+          setTimeout(() => restorePreviousTheme(snap), CLOSE_THEME_RESET_AT * 1000);
+        }
+      }, LOCK_DUR);
+    };
+
+    // Helper: normalizza path per confronto “stessa destinazione”
+    const normPath = (path) =>
+      (path || "")
+        .replace(/\/index\.html?$/i, "")
+        .replace(/\/+$/g, "") || "/";
+
+    // Helper: true se il link punta ESATTAMENTE alla pagina corrente (path + query + hash)
+    const isSameDestination = (anchorEl) => {
+      if (!anchorEl) return false;
+
+      const href = anchorEl.getAttribute("href");
+      if (!href || href === "#") return false;
+
+      let dest;
       try {
-        unlockScroll();
-        resumeLenis();
-      } catch {}
+        dest = new URL(href, window.location.href);
+      } catch {
+        return false;
+      }
 
-      // 🔹 Reset: rimuove "brand" e ripristina ESATTAMENTE lo stato precedente
-      restorePreviousTheme();
+      // solo stessi origin
+      if (dest.origin !== window.location.origin) return false;
+
+      const curPath = normPath(window.location.pathname);
+      const destPath = normPath(dest.pathname);
+
+      const samePath = destPath === curPath;
+      const sameQuery = dest.search === window.location.search;
+      const sameHash = (dest.hash || "") === (window.location.hash || "");
+
+      return samePath && sameQuery && sameHash;
     };
 
     navEl
@@ -302,6 +707,7 @@ function initMobileNavigation() {
       .forEach((toggleBtn) => {
         toggleBtn.addEventListener("click", (e) => {
           e.preventDefault();
+          if (isNavTransitioning) return;
           const isOpen = getStatus() === "active";
           isOpen ? closeNav() : openNav();
         });
@@ -312,13 +718,25 @@ function initMobileNavigation() {
       .forEach((closeBtn) => {
         closeBtn.addEventListener("click", (e) => {
           e.preventDefault();
+          if (isNavTransitioning) return;
           closeNav();
         });
       });
 
-    navEl.querySelectorAll(".nav_mobile_menu_link").forEach((link) => {
-      link.addEventListener("click", () => {
+    // Close on menu link click (compatibile con Barba)
+    // Caso extra: se clicchi un link che punta alla STESSA destinazione della pagina corrente,
+    // evita ogni navigazione e chiudi soltanto la nav.
+    navEl.querySelectorAll(".nav_mobile_menu_link, .nav_mobile_logo").forEach((link) => {
+      link.addEventListener("click", (e) => {
+        if (isNavTransitioning) return;
+        if (getStatus() === "active" && isSameDestination(link)) {
+          e.preventDefault();
+          closeNav();
+          return;
+        }
+
         closeNav();
+        // Barba gestisce automaticamente la navigazione sui link interni
       });
     });
 
@@ -389,9 +807,10 @@ function resetWebflow(data) {
    SIGNATURE STUDIO OLIMPO
    ========================================================================== */
 function initSignature() {
-    console.log(
-    "%cCredits: Studio Olimpo | Above the ordinary – https://www.studioolimpo.it",
-    "background: #F8F6F1; color: #000; font-size: 12px; padding:10px 14px;"
+  console.log(
+    "%cCredits: Studio Olimpo | Above the ordinary – %chttps://www.studioolimpo.it",
+    "background:#F8F6F1; color:#000; font-size:12px; padding:10px 0 10px 14px;",
+    "background:#F8F6F1; color:#000; font-size:12px; padding:10px 14px 10px 0; text-decoration:none;"
   );
 }
 
@@ -442,9 +861,16 @@ function initLenis() {
   const isCoarsePointer = window.matchMedia?.("(pointer: coarse)")?.matches;
 
   // Desktop: più inerzia. Touch: più controllato.
-  const duration = !isCoarsePointer && preset === "luxury" ? 1.9 : 1.25;
-  const lerp = !isCoarsePointer && preset === "luxury" ? 0.075 : 0.1;
-  const wheelMultiplier = !isCoarsePointer && preset === "luxury" ? 0.85 : 1;
+  // Preset supportati:
+  // - default: valore standard
+  // - luxury: (ora usa i valori di luxury-plus: più inerzia, feeling premium)
+
+  const isFinePointer = !isCoarsePointer;
+  const isLuxury = isFinePointer && preset === "luxury";
+
+  // luxury = luxury-plus (più inerzia, feeling premium)
+  const lerp = isLuxury ? 0.055 : 0.1;
+  const wheelMultiplier = isLuxury ? 0.75 : 1;
 
   lenis = new Lenis({
     smoothWheel: true,
@@ -452,7 +878,6 @@ function initLenis() {
     gestureOrientation: "vertical",
     wheelMultiplier,
     touchMultiplier: 1,
-    duration,
     lerp,
     easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
   });
@@ -470,7 +895,7 @@ function initLenis() {
   gsap.ticker.lagSmoothing(0);
 }
 
-function refreshAfterEnter(delay = 0.05) {
+function refreshAfterEnter(delay = 0.02) {
   if (typeof gsap === "undefined") return;
 
   gsap.delayedCall(delay, () => {
@@ -537,77 +962,239 @@ function resumeLenis() {
   } catch {}
 }
 
-// SAME PAGE CLICK
+/* =====================
+   PREVENT SAME PAGE CLICKS
+===================== */
+
 function preventSamePageClicks() {
   if (window.__samePageGuardBound) return;
   window.__samePageGuardBound = true;
 
-  const normPath = (path) =>
-    path
-      .replace(/\/index\.html?$/i, "")
-      .replace(/\/+$/g, "") || "/";
+  const norm = (p) =>
+    (p || "").replace(/\/index\.html?$/i, "").replace(/\/+$/g, "") || "/";
+
+  const isSkippable = (a, e) => {
+    const href = a.getAttribute("href") || "";
+    const h = href.trim().toLowerCase();
+    return (
+      e.defaultPrevented ||
+      e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button === 1 ||
+      a.target === "_blank" || a.hasAttribute("download") || a.rel === "external" ||
+      a.dataset.allowSame === "true" ||
+      !href || h === "#" || h === "" || h.startsWith("javascript:") || h.startsWith("mailto:") || h.startsWith("tel:")
+    );
+  };
+
+  const getOffset = () =>
+    parseFloat(document.documentElement.getAttribute("data-anchor-offset") || "0") || 0;
+
+  const getTarget = (hash) => {
+    if (!hash) return null;
+    const id = decodeURIComponent(hash.slice(1));
+    return document.getElementById(id) || document.querySelector(`#${CSS?.escape ? CSS.escape(id) : id}`);
+  };
 
   document.addEventListener(
     "click",
     (e) => {
       const a = e.target.closest("a[href]");
-      if (!a) return;
-
-      if (e.defaultPrevented) return;
-      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button === 1) return;
-      if (a.target === "_blank" || a.hasAttribute("download") || a.rel === "external") return;
-      if (a.dataset.allowSame === "true") return;
+      if (!a || isSkippable(a, e)) return;
 
       let dest;
-      try {
-        dest = new URL(a.getAttribute("href"), location.href);
-      } catch {
-        return;
-      }
-
+      try { dest = new URL(a.getAttribute("href"), location.href); } catch { return; }
       if (dest.origin !== location.origin) return;
 
-      const curPath = normPath(location.pathname);
-      const destPath = normPath(dest.pathname);
-      const sameBase = destPath === curPath && dest.search === location.search;
-
+      const sameBase = norm(dest.pathname) === norm(location.pathname) && dest.search === location.search;
       if (!sameBase) return;
 
-      // Anchor sulla stessa pagina
-      if (dest.hash) {
-        const targetEl =
-          document.getElementById(dest.hash.slice(1)) || document.querySelector(dest.hash);
-
-        if (targetEl) {
-          e.preventDefault();
-          if (window.lenis && typeof window.lenis.scrollTo === "function") {
-            window.lenis.scrollTo(targetEl, { offset: 0 });
-          } else {
-            targetEl.scrollIntoView({ behavior: "smooth", block: "start" });
-          }
-        }
-        return;
-      }
-
-      // Click sulla stessa pagina senza hash
       e.preventDefault();
-      if (window.lenis && typeof window.lenis.scrollTo === "function") {
-        window.lenis.scrollTo(0);
-      } else {
-        window.scrollTo({ top: 0, behavior: "smooth" });
+
+      const offset = getOffset();
+      if (dest.hash) {
+        const target = getTarget(dest.hash);
+        if (target) {
+          window.lenis?.scrollTo ? window.lenis.scrollTo(target, { offset: -offset }) : target.scrollIntoView({ behavior: "smooth" });
+          return;
+        }
       }
+
+      if ((window.scrollY || 0) < 2) return;
+      window.lenis?.scrollTo ? window.lenis.scrollTo(0) : window.scrollTo({ top: 0, behavior: "smooth" });
     },
     true
   );
 }
 
-// FOOTER YEAR
+
+/* =====================
+   UPDATE LINK STYLE NAVBAR
+===================== */
+function initBarbaNavUpdate(data) {
+  if (!data?.next?.html) return;
+
+  const $next = $(data.next.html).find('[data-barba-update="nav"]');
+  if (!$next.length) return;
+
+  $('[data-barba-update="nav"]').each(function (index) {
+    const $source = $($next[index]);
+    if (!$source.length) return;
+
+    const ariaCurrent = $source.attr("aria-current");
+    if (ariaCurrent !== undefined) {
+      $(this).attr("aria-current", ariaCurrent);
+    } else {
+      $(this).removeAttr("aria-current");
+    }
+
+    const className = $source.attr("class");
+    if (className !== undefined) {
+      $(this).attr("class", className);
+    }
+  });
+}
+
+/* =====================
+   FOOTER YEAR
+===================== */
 function initDynamicYear(scope = document) {
   const root = getRoot(scope);
   root.querySelectorAll("[data-dynamic-year]").forEach((el) => {
     el.textContent = String(new Date().getFullYear());
   });
 }
+
+
+/* =====================
+   SLIDESHOW STOPMOTION
+===================== */
+function initStopmotionSlideshow(scope, delayOverrideSec) {
+  scope = scope || document;
+
+  const wraps = scope.querySelectorAll(".slideshow-wrapper");
+  if (!wraps.length) return;
+
+  wraps.forEach((wrap) => {
+    // Guard against double init (Barba re-enters)
+    if (wrap.hasAttribute("data-stopmotion-initialized")) return;
+    wrap.setAttribute("data-stopmotion-initialized", "true");
+
+    const visualCol = wrap.querySelector(".u-layout-column-2");
+    if (!visualCol) return;
+
+    // NEW: stack container that holds the frames
+    const stack = visualCol.querySelector(".slideshow_wrap");
+    if (!stack) return;
+
+    // NEW: frames are the inner .u-image-wrapper elements inside stack (exclude stack itself)
+    const frames = Array.from(
+      stack.querySelectorAll(
+        '.u-image-wrapper[data-wf--visual-image--variant="cover"]',
+      ),
+    );
+
+    if (frames.length < 2) return;
+
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+
+    // Tuning via attributes (seconds)
+    const HOLD = parseFloat(wrap.getAttribute("data-stopmotion-hold")) || 2.5;
+    const FADE = parseFloat(wrap.getAttribute("data-stopmotion-fade")) || 1.0;
+
+    // Start delay (seconds) to avoid overlapping the Hero intro
+    // Priority: function override > data attribute > default
+    const START_DELAY =
+      Number.isFinite(delayOverrideSec)
+        ? delayOverrideSec
+        : parseFloat(wrap.getAttribute("data-stopmotion-start-delay")) || 3.0;
+
+    // Prepare stacking (relative on stack, absolute on frames)
+    gsap.set(stack, { position: "relative" });
+
+    frames.forEach((el, idx) => {
+      gsap.set(el, {
+        position: "absolute",
+        inset: 0,
+        width: "100%",
+        height: "100%",
+        autoAlpha: idx === 0 ? 1 : 0,
+        zIndex: idx === 0 ? 2 : 1,
+        willChange: "opacity",
+      });
+    });
+
+    // Reduced motion: keep first visible only
+    if (reduceMotion) return;
+
+    // Kill any previous timeline/trigger if somehow present
+    if (wrap.__stopmotionTl) wrap.__stopmotionTl.kill();
+    if (wrap.__stopmotionST) wrap.__stopmotionST.kill();
+    try {
+      wrap.__stopmotionStartCall?.kill?.();
+    } catch {}
+    wrap.__stopmotionStartCall = null;
+
+    // Looping crossfade timeline
+    const tl = gsap.timeline({
+      paused: true,
+      repeat: -1,
+      defaults: { ease: "none" },
+    });
+
+    for (let i = 0; i < frames.length; i++) {
+      const current = frames[i];
+      const next = frames[(i + 1) % frames.length];
+
+      // Hold current fully visible
+      tl.to({}, { duration: HOLD });
+
+      // Crossfade
+      tl.to(current, { autoAlpha: 0, duration: FADE }, ">");
+      tl.to(next, { autoAlpha: 1, duration: FADE }, "<");
+
+      // Keep stacking consistent
+      tl.set(current, { zIndex: 1 });
+      tl.set(next, { zIndex: 2 });
+    }
+
+    wrap.__stopmotionTl = tl;
+
+    // Start (delayed) + viewport control
+    const start = () => {
+      // If the element has been removed during transitions, abort safely
+      if (!document.documentElement.contains(wrap)) return;
+
+      // Play/pause only when in viewport (se ScrollTrigger è disponibile)
+      if (typeof ScrollTrigger !== "undefined") {
+        wrap.__stopmotionST = ScrollTrigger.create({
+          trigger: wrap,
+          start: "top bottom",
+          end: "bottom top",
+          onEnter: () => tl.play(),
+          onEnterBack: () => tl.play(),
+          onLeave: () => tl.pause(),
+          onLeaveBack: () => tl.pause(),
+        });
+
+        // If already visible at init time, start immediately
+        if (typeof ScrollTrigger.isInViewport === "function" && ScrollTrigger.isInViewport(wrap, 0.1)) {
+          tl.play();
+        }
+      } else {
+        // Fallback: se non c'è ScrollTrigger, avvia subito il loop
+        tl.play();
+      }
+    };
+
+    if (typeof gsap !== "undefined" && typeof gsap.delayedCall === "function") {
+      wrap.__stopmotionStartCall = gsap.delayedCall(START_DELAY, start);
+    } else {
+      const t = setTimeout(start, START_DELAY * 1000);
+      wrap.__stopmotionStartCall = { kill: () => clearTimeout(t) };
+    }
+  });
+}
+
+
 
 /* ==========================================================================
    FORM – SUCCESS CUSTOM TRANSITION (Webflow)
@@ -844,155 +1431,7 @@ function initFormSuccessTransition(scope = document) {
   });
 }
 
-function CssRetriggerAnimationsOnScroll(scope = document) {
-  if (!__loaderDone) {
-    document.addEventListener(
-      "loader:done",
-      () => CssRetriggerAnimationsOnScroll(scope),
-      { once: true }
-    );
-    return;
-  }
-  const root = getRoot(scope);
-  const targets = root.querySelectorAll("[data-css-scroll]");
-  if (!targets.length) return;
 
-  // Evita doppia inizializzazione sullo stesso scope (utile con Barba)
-  if (root.__cssScrollInit === true) return;
-  root.__cssScrollInit = true;
-
-  const thresholdGroups = new Map();
-
-  targets.forEach((el) => {
-    const thresholdStr = el.dataset.cssScrollThreshold || "50%";
-    const threshold = parseFloat(thresholdStr) / 100;
-    if (!thresholdGroups.has(threshold)) thresholdGroups.set(threshold, []);
-    thresholdGroups.get(threshold).push(el);
-  });
-
-  const entryObserver = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        if (entry.isIntersecting && !entry.target.__pastThreshold && entry.target.__ioInit) {
-          entry.target.classList.add("animation-ready");
-          entryObserver.unobserve(entry.target);
-        }
-      }
-    },
-    { threshold: 0, rootMargin: "-1px" }
-  );
-
-  const exitObserver = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        const el = entry.target;
-        const mode = el.dataset.cssScroll || "";
-        if (!entry.isIntersecting && mode !== "retrigger-none" && el.__ioInit) {
-          const isExitingTop = entry.boundingClientRect.bottom < entry.rootBounds.top;
-          if (mode === "retrigger-both" || !isExitingTop) el.classList.add("animation-ready");
-        }
-      }
-    },
-    { threshold: 0, rootMargin: "-1px" }
-  );
-
-  const ios = [];
-
-  thresholdGroups.forEach((elements, threshold) => {
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const el = entry.target;
-          const mode = el.dataset.cssScroll || "";
-
-          if (!el.__ioInit) {
-            el.__ioInit = true;
-            if (entry.isIntersecting) {
-              el.__cssAnimTriggered = true;
-              el.__pastThreshold = true;
-            }
-            continue;
-          }
-
-          if (!entry.isIntersecting) {
-            if (mode !== "retrigger-none") el.__cssAnimTriggered = false;
-            continue;
-          }
-
-          const isScrollingDown =
-            entry.boundingClientRect.top >= 0 && entry.boundingClientRect.top < entry.rootBounds.bottom;
-
-          const shouldTrigger =
-            mode === "retrigger-none"
-              ? !el.__cssAnimTriggered
-              : mode === "retrigger-both"
-              ? !el.__cssAnimTriggered
-              : !el.__cssAnimTriggered && isScrollingDown;
-
-          if (!shouldTrigger) continue;
-
-          el.__cssAnimTriggered = true;
-          if (!el.classList.contains("animation-ready")) continue;
-
-          const delayMs = Number(el.dataset.cssScrollDelay || 0);
-
-          // evita doppi timeout se l’utente scrolla avanti e indietro velocemente
-          if (el.__cssDelayTimer) {
-            clearTimeout(el.__cssDelayTimer);
-            el.__cssDelayTimer = null;
-          }
-
-          el.__cssDelayTimer = setTimeout(() => {
-            el.__cssDelayTimer = null;
-
-            // se nel frattempo è uscito dalla viewport, non far partire nulla
-            // (evita animazioni “fantasma”)
-            if (!el.isConnected) return;
-
-            el.classList.remove("animation-ready");
-            el.classList.add("reset-animations");
-            el.offsetHeight;
-
-            requestAnimationFrame(() => {
-              el.classList.remove("reset-animations");
-              if (mode === "retrigger-none") io.unobserve(el);
-            });
-          }, delayMs);
-        }
-      },
-      { threshold }
-    );
-
-    ios.push(io);
-
-    elements.forEach((el) => {
-      io.observe(el);
-      entryObserver.observe(el);
-      exitObserver.observe(el);
-    });
-  });
-
-  // Cleanup agganciato allo scope (container Barba)
-  root.__cssScrollCleanup = () => {
-    try {
-      entryObserver.disconnect();
-      exitObserver.disconnect();
-      ios.forEach((o) => o.disconnect());
-    } catch {}
-
-    try {
-      delete root.__cssScrollCleanup;
-      delete root.__cssScrollInit;
-    } catch {}
-  };
-}
-
-function destroyCssRetriggerAnimationsOnScroll(scope = document) {
-  const root = getRoot(scope);
-  try {
-    root.__cssScrollCleanup?.();
-  } catch {}
-}
 
 /* =====================
    SWIPER
@@ -1047,8 +1486,10 @@ function initSwiperSliders(scope = document) {
     const followFinger = swiperElement.getAttribute("data-follow-finger") === "true";
     const freeMode = swiperElement.getAttribute("data-free-mode") === "true";
     const mousewheel = swiperElement.getAttribute("data-mousewheel") === "true";
-    const slideToClickedSlide = swiperElement.getAttribute("data-slide-to-clicked") === "true";
+    const slideToClickedSlide =
+      swiperElement.getAttribute("data-slide-to-clicked") === "true";
     const speed = +swiperElement.getAttribute("data-speed") || 600;
+    const loop = swiperElement.getAttribute("data-loop") === "true";
 
     // Effetto opzionale
     const effectAttr = (swiperElement.getAttribute("data-effect") || "").toLowerCase();
@@ -1058,6 +1499,7 @@ function initSwiperSliders(scope = document) {
     const config = {
       slidesPerView: "auto",
       followFinger,
+      loop,
       loopAdditionalSlides: 10,
       freeMode,
       slideToClickedSlide,
@@ -1087,6 +1529,8 @@ function initSwiperSliders(scope = document) {
       slideDuplicateActiveClass: "is-active",
     };
 
+
+
     if (effect === "fade") {
       config.effect = "fade";
       config.fadeEffect = { crossFade: true };
@@ -1107,6 +1551,7 @@ function initSwiperSliders(scope = document) {
     });
   };
 }
+
 
 function destroySwiperSliders(scope = document) {
   const root = getRoot(scope);
@@ -1240,6 +1685,533 @@ function destroyAccordions(scope = document) {
 }
 
 /* =====================
+   GSAP SCROLL REVEALS
+   - standardizza i reveal con ScrollTrigger
+   - evita flash: gli elementi partono invisibili e vengono rivelati onEnter
+   - safe con Barba: init/destroy per scope
+===================== */
+
+/* =====================
+   HERO INTRO (home)
+   - stile Ilja: reveal elegante, timing controllato, no ScrollTrigger
+   - target: section[data-anim="hero"] (o data-anim="hero-home")
+   - safe con Barba: init/destroy per scope
+===================== */
+
+function initHeroIntro(scope = document) {
+  if (typeof gsap === "undefined") {
+    console.warn("[HERO] GSAP non trovato, hero intro disattivato");
+    return;
+  }
+
+  const root = getRoot(scope);
+
+  // Evita doppia init nello stesso scope
+  if (root.__heroIntroInit === true) return;
+  root.__heroIntroInit = true;
+
+  // Helper: trova il primo elemento esistente e visibile (non display:none, non visibility:hidden)
+  const pickFirstVisible = (nodes) => {
+    const arr = Array.isArray(nodes) ? nodes : Array.from(nodes || []);
+    for (const el of arr) {
+      if (!el) continue;
+      const cs = window.getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") continue;
+      return el;
+    }
+    return null;
+  };
+
+  // Target hero: un solo boundary affidabile.
+  // Priorità:
+  // 1) data-hero="wrap" (consigliato)
+  // 2) fallback storici già presenti
+  const hero =
+    root.querySelector('[data-hero="wrap"]') ||
+    root.querySelector("#hero-home") ||
+    root.querySelector('[data-anim="hero"], [data-anim="hero-home"], [data-hero="wrap"]');
+
+  if (!hero) return;
+
+  // Se prefer-reduced-motion: mostra tutto subito
+  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+
+  // ==========================
+  // PARTS RESOLUTION (NO data-hero media/content)
+  // ==========================
+
+  // Contenuto testuale: priorità su wrapper specifico.
+  // Fallback: colonna 1, ma SOLO se è dentro la hero.
+  const contentWrap =
+    hero.querySelector(".u-content-wrapper") ||
+    hero.querySelector(".u-layout-column-1") ||
+    null;
+
+  // Media: cerchiamo un media wrapper che non sia dentro il contentWrap.
+  // Supportiamo immagine singola, slider, stopmotion stack.
+  const mediaCandidates = [];
+
+  // 1) Slider (se presente) dentro colonna visual
+  mediaCandidates.push(
+    ...hero.querySelectorAll(
+      ".slideshow_wrap, .slider_wrap, [data-slider='component'], [data-slider='collection']"
+    )
+  );
+
+  // 2) Wrapper immagine singola
+  mediaCandidates.push(...hero.querySelectorAll(".u-image-wrapper"));
+
+  // Filtra candidati: escludi quelli dentro il contentWrap (per evitare collisioni)
+  const filteredMedia = mediaCandidates.filter((el) => {
+    if (!el) return false;
+    if (contentWrap && contentWrap.contains(el)) return false;
+    // escludi eventuali immagini decorative tiny, se servisse in futuro: per ora nulla
+    return true;
+  });
+
+  const mediaWrap = pickFirstVisible(filteredMedia);
+
+  // Child list per stagger: vogliamo la grammatica della home (stagger morbido).
+  // Se non ho contentWrap, niente contenuto da animare.
+  const contentChildren = contentWrap ? Array.from(contentWrap.children) : [];
+
+  // Se reduce motion: stato finale immediato
+  if (reduceMotion) {
+    if (mediaWrap) {
+      // media: visibile, no blur
+      gsap.set(mediaWrap, { autoAlpha: 1, filter: "blur(0px)", clearProps: "transform" });
+    }
+    if (contentChildren.length) {
+      gsap.set(contentChildren, { autoAlpha: 1, clearProps: "transform" });
+    }
+    root.__heroIntroTl = null;
+    return;
+  }
+
+  // Timeline (pausata): verrà avviata da playHeroIntro
+  const tl = gsap.timeline({
+    paused: true,
+    defaults: { ease: "power1.inOut" },
+  });
+
+  // ==========================
+  // INITIAL STATE (anti-flash)
+  // ==========================
+
+  if (mediaWrap) {
+    // Nota: non forziamo y/scale per non interferire con layout e slider.
+    gsap.set(mediaWrap, {
+      autoAlpha: 0,
+      filter: "blur(8px)",
+      willChange: "opacity, filter",
+    });
+  }
+
+  if (contentChildren.length) {
+    gsap.set(contentChildren, {
+      autoAlpha: 0,
+      willChange: "opacity",
+    });
+  }
+
+  // ==========================
+  // ANIMATION GRAMMAR (match hero home)
+  // ==========================
+
+  // Media: fade + blur to 0
+  if (mediaWrap) {
+    tl.to(
+      mediaWrap,
+      {
+        duration: 0.7,
+        autoAlpha: 1,
+        filter: "blur(0px)",
+        onComplete: () => {
+          try {
+            mediaWrap.style.willChange = "";
+          } catch {}
+        },
+      },
+      0
+    );
+  }
+
+  // Content: fade stagger morbido
+  if (contentChildren.length) {
+    tl.to(
+      contentChildren,
+      {
+        duration: 1,
+        autoAlpha: 1,
+        stagger: 0.3,
+        onComplete: () => {
+          contentChildren.forEach((el) => {
+            try {
+              el.style.willChange = "";
+            } catch {}
+          });
+        },
+      },
+      0.25
+    );
+  }
+
+  // Salva timeline su scope
+  root.__heroIntroTl = tl;
+
+  // Cleanup
+  root.__heroIntroCleanup = () => {
+    try {
+      root.__heroIntroTl?.kill?.();
+    } catch {}
+
+    try {
+      delete root.__heroIntroTl;
+      delete root.__heroIntroCleanup;
+      delete root.__heroIntroInit;
+    } catch {}
+  };
+}
+
+/**
+ * Avvia la Hero intro con delay configurabile.
+ * Nota: la Hero timeline è creata da `initHeroIntro(scope)` ed è `paused: true`.
+ * @param {Element|Document} scope
+ * @param {number} delaySec - delay in secondi (es. 0.1 first load, 0.15 transition)
+ */
+function playHeroIntro(scope = document, delaySec = 0) {
+  if (typeof gsap === "undefined") return;
+
+  const root = getRoot(scope);
+  const tl = root.__heroIntroTl;
+  if (!tl) {
+    // Se non c'è una hero timeline, segnala comunque che la hero è "done" per non bloccare le sezioni.
+    try {
+      document.dispatchEvent(new CustomEvent("hero:intro-done"));
+    } catch {}
+    return;
+  }
+
+  // evita replay accidentali
+  if (tl.__played) return;
+  tl.__played = true;
+
+  const d = Math.max(0, Number(delaySec) || 0);
+
+  gsap.delayedCall(d, () => {
+    try {
+      // Notifica start
+      try {
+        document.dispatchEvent(new CustomEvent("hero:intro-start"));
+      } catch {}
+
+      // Notifica done quando la timeline ha finito
+      const prevOnComplete = tl.eventCallback("onComplete");
+      tl.eventCallback("onComplete", () => {
+        try {
+          prevOnComplete?.();
+        } catch {}
+        try {
+          document.dispatchEvent(new CustomEvent("hero:intro-done"));
+        } catch {}
+      });
+
+      tl.play(0);
+    } catch {
+      // Safety: se qualcosa va storto, non bloccare l'orchestrazione
+      try {
+        document.dispatchEvent(new CustomEvent("hero:intro-done"));
+      } catch {}
+    }
+  });
+}
+
+function destroyHeroIntro(scope = document) {
+  const root = getRoot(scope);
+  try {
+    root.__heroIntroCleanup?.();
+  } catch {}
+  try {
+    delete root.__heroIntroCleanup;
+  } catch {}
+}
+
+function initScrollReveals(scope = document) {
+  // Richiede GSAP + ScrollTrigger
+  if (typeof gsap === "undefined" || typeof ScrollTrigger === "undefined") {
+    console.warn("[REVEAL] GSAP/ScrollTrigger non trovati, reveals disattivati");
+    return;
+  }
+
+  const root = getRoot(scope);
+
+  // Evita doppia init nello stesso scope
+  if (root.__revealInit === true) return;
+  root.__revealInit = true;
+
+  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  const isCoarsePointer = window.matchMedia?.("(pointer: coarse)")?.matches;
+
+  // Orchestrazione: ritarda SOLO le sezioni già visibili above the fold (desktop)
+  // così partono dopo la Hero e con uno stagger per sezione.
+  const DESKTOP_GRACE_DELAY = 0.45; // dopo hero
+  const DESKTOP_QUEUE_STAGGER = 0.18; // tra sezioni già visibili
+  const SAFETY_UNLOCK_SEC = 1.2;
+
+  const created = {
+    triggers: [],
+    contexts: [],
+  };
+
+  const isInsideHero = (el) => !!el?.closest?.('[data-hero="wrap"]');
+
+  // Esclusioni globali (senza data-attributes): hero (già), footer, nav, loader
+  const isExcluded = (el) => {
+    if (!el) return true;
+    if (isInsideHero(el)) return true;
+    if (el.closest("footer")) return true;
+    if (el.closest(".nav_component, .nav_desktop_wrap, .nav_mobile_wrap")) return true;
+    if (el.closest(".loader_wrap")) return true;
+    return false;
+  };
+
+  const isInViewport = (el, threshold = 0.1) => {
+    if (!el || !el.getBoundingClientRect) return false;
+    const r = el.getBoundingClientRect();
+    const vh = window.innerHeight || 0;
+    const vw = window.innerWidth || 0;
+    if (!vh || !vw) return false;
+
+    const topVisible = r.top <= vh * (1 - threshold);
+    const bottomVisible = r.bottom >= vh * threshold;
+    const leftVisible = r.left <= vw;
+    const rightVisible = r.right >= 0;
+
+    return topVisible && bottomVisible && leftVisible && rightVisible;
+  };
+
+  // Evita di pescare target dentro altre section annidate
+  const isInSameSection = (node, section) => {
+    const closestSection = node?.closest?.("section.u-section");
+    return closestSection === section;
+  };
+
+  // Colleziona target “Lumos-friendly” senza data attributes.
+  // Strategia:
+  // - anima elementi semantici (content wrappers, headings, richtext, images, buttons)
+  // - se non trovi nulla, anima i figli diretti “visivi” della section
+  const collectSectionTargets = (section) => {
+    if (!section || isExcluded(section)) return [];
+
+    // 1) Target primari più affidabili
+    const primarySelectors = [
+      ".u-content-wrapper",
+      ".u-text.w-richtext",
+      ".u-rich-text.w-richtext",
+      ".u-eyebrow-wrapper",
+      ".u-button-wrapper",
+      ".u-image-wrapper",
+      ".slider_wrap",
+      ".slideshow_wrap",
+      ".accordion_wrap",
+    ];
+
+    let targets = Array.from(section.querySelectorAll(primarySelectors.join(",")))
+      .filter((el) => el && !isExcluded(el))
+      .filter((el) => isInSameSection(el, section));
+
+    // 2) Dedup + filtra invisibili
+    targets = Array.from(new Set(targets)).filter((el) => {
+      try {
+        const cs = window.getComputedStyle(el);
+        return cs.display !== "none" && cs.visibility !== "hidden";
+      } catch {
+        return true;
+      }
+    });
+
+    // 3) Fallback: figli diretti “consistenti” della section
+    if (!targets.length) {
+      targets = Array.from(section.children || []).filter((el) => {
+        if (!el || isExcluded(el)) return false;
+        // evita spacer e background slot
+        if (el.classList?.contains("u-section-spacer")) return false;
+        if (el.classList?.contains("u-background-slot")) return false;
+        return true;
+      });
+    }
+
+    return targets;
+  };
+
+  // ---- UNLOCK GATE (per ritardare solo gli elementi già visibili) ----
+  let unlocked = false;
+  const aboveFoldQueue = []; // { tl, top }
+
+  const enqueueAboveFold = (tl, top) => {
+    if (!tl) return;
+    // Mobile/touch: niente code, play immediato
+    if (isCoarsePointer) {
+      tl.play(0);
+      return;
+    }
+    aboveFoldQueue.push({ tl, top });
+  };
+
+  const flushAboveFoldQueue = () => {
+    if (!aboveFoldQueue.length) return;
+    aboveFoldQueue.sort((a, b) => a.top - b.top);
+
+    const base = isCoarsePointer ? 0 : DESKTOP_GRACE_DELAY;
+    const step = isCoarsePointer ? 0 : DESKTOP_QUEUE_STAGGER;
+
+    aboveFoldQueue.forEach((u, i) => {
+      const tl = u?.tl;
+      if (!tl) return;
+      if (tl.isActive() || tl.progress() > 0) return;
+
+      gsap.delayedCall(Math.max(0, base + i * step), () => {
+        try {
+          if (tl.isActive() || tl.progress() > 0) return;
+          tl.play(0);
+        } catch {}
+      });
+    });
+
+    aboveFoldQueue.length = 0;
+  };
+
+  const unlock = () => {
+    if (unlocked) return;
+    unlocked = true;
+    flushAboveFoldQueue();
+  };
+
+  const onHeroDone = () => {
+    document.removeEventListener("hero:intro-done", onHeroDone);
+    unlock();
+  };
+
+  document.addEventListener("hero:intro-done", onHeroDone);
+  gsap.delayedCall(SAFETY_UNLOCK_SEC, unlock);
+
+  // ---- FACTORY: timeline reveal section (grammatica coerente con Hero, ma da scroll) ----
+  const makeSectionRevealTl = (targets) => {
+    if (!targets || !targets.length) return null;
+
+    if (reduceMotion) {
+      gsap.set(targets, { autoAlpha: 1, clearProps: "transform" });
+      return null;
+    }
+
+    // Stato iniziale: invisibili, leggero offset
+    gsap.set(targets, {
+      autoAlpha: 0,
+      y: 24,
+      willChange: "opacity, transform",
+    });
+
+    const tl = gsap.timeline({
+      paused: true,
+      defaults: { ease: "power3.out" },
+      onComplete: () => {
+        targets.forEach((t) => {
+          try {
+            t.style.willChange = "";
+          } catch {}
+        });
+      },
+    });
+
+    tl.to(targets, {
+      duration: 0.9,
+      autoAlpha: 1,
+      y: 0,
+      stagger: { each: 0.12, from: "start" },
+      immediateRender: false,
+    });
+
+    return tl;
+  };
+
+  // Target: tutte le section Lumos, escluse hero/footer/nav/loader
+  const sections = Array.from(root.querySelectorAll("section.u-section"))
+    .filter((s) => !isExcluded(s));
+
+  if (!sections.length) return;
+
+  const ctx = gsap.context(() => {
+    sections.forEach((section) => {
+      const targets = collectSectionTargets(section);
+      if (!targets.length) return;
+
+      const tl = makeSectionRevealTl(targets);
+      if (!tl) return;
+
+      // Se la section è già visibile, la mettiamo in coda (desktop) e la facciamo partire dopo Hero
+      if (isInViewport(section, 0.08) && !unlocked) {
+        enqueueAboveFold(tl, section.getBoundingClientRect().top);
+      }
+
+      const st = ScrollTrigger.create({
+        trigger: section,
+        start: "top 85%",
+        once: true,
+        onEnter: () => {
+          if (tl.isActive() || tl.progress() > 0) return;
+
+          // Se è above the fold e Hero non ha ancora sbloccato, mettila in coda
+          if (!unlocked && isInViewport(section, 0.08)) {
+            enqueueAboveFold(tl, section.getBoundingClientRect().top);
+            return;
+          }
+
+          tl.play(0);
+        },
+      });
+
+      created.triggers.push(st);
+    });
+  }, root);
+
+  created.contexts.push(ctx);
+
+  // Cleanup
+  root.__revealCleanup = () => {
+    try {
+      document.removeEventListener("hero:intro-done", onHeroDone);
+    } catch {}
+
+    try {
+      created.triggers.forEach((t) => t?.kill?.());
+    } catch {}
+
+    try {
+      created.contexts.forEach((c) => c?.revert?.());
+    } catch {}
+
+    try {
+      delete root.__revealInit;
+      delete root.__revealCleanup;
+    } catch {}
+
+    try {
+      ScrollTrigger.refresh(true);
+    } catch {}
+  };
+}
+
+function destroyScrollReveals(scope = document) {
+  const root = getRoot(scope);
+  try {
+    root.__revealCleanup?.();
+  } catch {}
+  try {
+    delete root.__revealCleanup;
+  } catch {}
+}
+
+/* =====================
    BARBA
 ===================== */
 
@@ -1252,8 +2224,37 @@ if (typeof barba !== "undefined") barba.init({
       name: "fixed-fade-min",
 
       once({ next }) {
-        // attende animazione loader-in prima di uscire
-        hideLoader(2000);
+        // Loader + Hero: overlap controllato (Hero parte mentre il loader sta uscendo)
+        const scope = next?.container || document;
+        const loaderEl = document.querySelector(".loader_wrap");
+
+        // Se non c'è loader, mostra subito Hero e procedi coi refresh
+        if (!loaderEl) {
+          hideLoader(0).then(() => {
+            playHeroIntro(scope, 0.1);
+            refreshAfterEnter(0.05);
+            refreshAfterEnter(0.25);
+          });
+        } else {
+          const OVERLAP_DELAY = 0.3; // secondi: quanto dopo l'inizio dell'uscita parte la Hero
+
+          const onExitStart = () => {
+            document.removeEventListener("loader:exit-start", onExitStart);
+
+            // Hero parte mentre il loader è ancora in uscita
+            gsap.delayedCall(OVERLAP_DELAY, () => {
+              playHeroIntro(scope, 0);
+            });
+          };
+
+          document.addEventListener("loader:exit-start", onExitStart);
+
+          hideLoader(3000).then(() => {
+            // Refresh dopo che il loader è effettivamente rimosso
+            refreshAfterEnter(0.05);
+            refreshAfterEnter(0.25);
+          });
+        }
 
         preventSamePageClicks();
         initCustomCursor();
@@ -1267,13 +2268,16 @@ if (typeof barba !== "undefined") barba.init({
           window.lenis?.start?.();
         } catch {}
 
-        const scope = next?.container || document;
+        // const scope = next?.container || document; // (already defined above)
+        initHeroIntro(scope);
+        initScrollReveals(scope);
+        initStopmotionSlideshow(scope, 3);
         initSwiperSliders(scope);
         initAccordions(scope);
 
         forceNextPageToTop();
-        refreshAfterEnter(0.05);
-        refreshAfterEnter(0.25);
+        // refreshAfterEnter(0.05); // ora gestito in .then()
+        // refreshAfterEnter(0.25); // ora gestito in .then()
       },
 
       leave({ current }) {
@@ -1322,16 +2326,27 @@ if (typeof barba !== "undefined") barba.init({
         initAccordions(next.container);
         initDynamicYear(next.container);
         initFormSuccessTransition(next.container);
-        CssRetriggerAnimationsOnScroll(next.container);
+        initHeroIntro(next.container);
+        initScrollReveals(next.container);
+        initStopmotionSlideshow(next.container, 2);
 
         // removed refreshAfterEnter(0.01);
 
+        const HERO_DELAY = 0.05; // Hero parte durante il fade-in del container
+
         return gsap.to(next.container, {
-          delay: 0.3,
+          delay: 0.15,
           autoAlpha: 1,
           duration: 1.25,
           ease: "power2.out",
           clearProps: "willChange",
+          onStart: () => {
+            // Hero parte DURANTE il fade-in del container
+            playHeroIntro(next.container, HERO_DELAY);
+          },
+          onComplete: () => {
+            refreshAfterEnter(0.05);
+          },
         });
       },
 
@@ -1343,7 +2358,8 @@ if (typeof barba !== "undefined") barba.init({
         // Cleanup quando il current è già sparito, evita snap visibili prima della transizione
         destroySwiperSliders(current?.container || document);
         destroyAccordions(current?.container || document);
-        destroyCssRetriggerAnimationsOnScroll(current?.container || document);
+        destroyHeroIntro(current?.container || document);
+        destroyScrollReveals(current?.container || document);
 
         gsap.set(current.container, {
           clearProps: "position,top,left,right,width,zIndex,opacity,visibility,willChange,pointerEvents",
@@ -1366,7 +2382,8 @@ if (window.barba && window.barba.hooks) {
 
 
   barba.hooks.enter((data) => {
-  if (typeof resetWebflow === "function") resetWebflow(data);
+    initBarbaNavUpdate(data);
+    if (typeof resetWebflow === "function") resetWebflow(data);
   });
 
 
@@ -1375,11 +2392,9 @@ if (window.barba && window.barba.hooks) {
 
   barba.hooks.afterEnter(() => {
     preventSamePageClicks();
-    initDynamicYear(document);
     initFormSuccessTransition(document);
-    CssRetriggerAnimationsOnScroll(document);
-    // evita micro-salti a fine transizione: riallinea Lenis sullo scroll attuale
     initLenis();
+    initDetectScrollingDirection();
     try {
       window.lenis?.scrollTo?.(window.scrollY || 0, { immediate: true });
     } catch {}
@@ -1388,6 +2403,3 @@ if (window.barba && window.barba.hooks) {
     refreshAfterEnter(0.35);
   });
 }
-
-// Nota: per attivare il preset più “inerziale”, imposta in Webflow:
-// <html data-lenis-preset="luxury">
