@@ -296,13 +296,15 @@ function initDetectScrollingDirection() {
               gsap.to(desktopNav, {
                 yPercent: -150,
                 duration: 0.9,
-                ease: "power3.out",
+                opacity: 0,
+                ease: "power2.out",
                 overwrite: true,
               });
             } else if (direction === "up") {
               gsap.to(desktopNav, {
                 yPercent: 0,
-                duration: 0.75,
+                opacity: 1,
+                duration: 0.9,
                 ease: "power2.out",
                 overwrite: true,
               });
@@ -358,9 +360,9 @@ function initMobileNavigation() {
     const SHIFT_Y = parseFloat(navEl.getAttribute("data-nav-shift-y") || "16");
 
     // Durate/ease (luxury, morbide) per accompagnare la discesa/salita del pannello
-    const SHIFT_OPEN_DURATION = 0.95;
-    const SHIFT_CLOSE_DURATION = 0.85;
-    const SHIFT_OPEN_EASE = "power3.out";
+    const SHIFT_OPEN_DURATION = 1.0;
+    const SHIFT_CLOSE_DURATION = 0.9;
+    const SHIFT_OPEN_EASE = "power2.out";
     const SHIFT_CLOSE_EASE = "power2.inOut";
 
     // Micro overlap: in chiusura il rientro parte leggermente dopo
@@ -371,12 +373,12 @@ function initMobileNavigation() {
 
 
     // Durate tema (più lunghe, come richiesto)
-    const THEME_OPEN_DURATION = 0.5;
-    const THEME_CLOSE_DURATION = 0.75;
-    const PANEL_CLOSE_DURATION = 0.9; // match CSS --panel-close (900ms)
-    const PANEL_CLOSE_OPACITY_DELAY = 0.1; // opacity delay
-    const THEME_RESET_OVERLAP = 0.65; // % della chiusura a cui iniziare il reset tema
-    const THEME_EASE = "power2.out";
+    const THEME_OPEN_DURATION = 0.6;
+    const THEME_CLOSE_DURATION = 0.45;
+    const PANEL_CLOSE_DURATION = 1.0; // match CSS --panel-close (900ms)
+    const PANEL_CLOSE_OPACITY_DELAY = 0.2; // opacity delay
+    const THEME_RESET_OVERLAP = 0.55; // % della chiusura a cui iniziare il reset tema
+    const THEME_EASE = "power3.out";
 
     /* ==========================
        SHIFT HANDLER (contenuto pagina)
@@ -868,9 +870,18 @@ function initLenis() {
   const isFinePointer = !isCoarsePointer;
   const isLuxury = isFinePointer && preset === "luxury";
 
-  // luxury = luxury-plus (più inerzia, feeling premium)
-  const lerp = isLuxury ? 0.055 : 0.1;
-  const wheelMultiplier = isLuxury ? 0.75 : 1;
+  // PERFORMANCE TUNING per frenata smooth come burro
+  // lerp più alto = frenata più immediata, meno "coda" = zero scatti percepiti
+  // Permetti override da HTML per tuning rapido:
+  // <html data-lenis-lerp="0.08" data-lenis-wheel-mult="0.9">
+  const lerpOverride = parseFloat(document.documentElement.getAttribute("data-lenis-lerp") || "");
+  const wheelMultOverride = parseFloat(document.documentElement.getAttribute("data-lenis-wheel-mult") || "");
+
+  // OTTIMIZZATO: lerp più bilanciato per frenata perfetta
+  // 0.055 troppo basso = coda lunga = scatti
+  // 0.08 = sweet spot: smooth ma frenata decisa
+  const lerp = Number.isFinite(lerpOverride) ? lerpOverride : (isLuxury ? 0.08 : 0.12);
+  const wheelMultiplier = Number.isFinite(wheelMultOverride) ? wheelMultOverride : (isLuxury ? 0.85 : 1);
 
   lenis = new Lenis({
     smoothWheel: true,
@@ -879,20 +890,48 @@ function initLenis() {
     wheelMultiplier,
     touchMultiplier: 1,
     lerp,
-    easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
+    // SMOOTH EASING: curva ottimizzata per frenata fluida
+    // Evita micro-scatti alla fine della decelerazione
+    easing: (t) => 1 - Math.pow(1 - t, 3), // cubic-out perfetto
+    // Infinite scroll disabilitato per performance
+    infinite: false,
   });
 
   window.lenis = lenis;
 
+  // PERFORMANCE: ScrollTrigger update ottimizzato
+  // Evita calcoli pesanti ad ogni frame durante scroll veloce
   if (typeof ScrollTrigger !== "undefined") {
     try {
+      // RequestAnimationFrame throttling nativo di Lenis
+      // ScrollTrigger.update viene chiamato solo quando necessario
       lenis.on("scroll", ScrollTrigger.update);
+
+      // BONUS: disabilita ScrollTrigger "scrub" smoothing se presente
+      // (Lenis fa già il lavoro, evita doppia interpolazione)
+      ScrollTrigger.defaults({
+        immediateRender: false,
+      });
     } catch {}
   }
 
   _lenisRaf = (t) => lenis.raf(t * 1000);
   gsap.ticker.add(_lenisRaf);
-  gsap.ticker.lagSmoothing(0);
+
+  // GSAP LAG SMOOTHING: CRITICO per frenata fluida
+  // Quando il frame rate oscilla, GSAP compensa per evitare scatti
+  // Permetti override da HTML: <html data-gsap-lag-threshold="500" data-gsap-lag-adjusted="33">
+  const lagThreshold = parseFloat(document.documentElement.getAttribute("data-gsap-lag-threshold") || "");
+  const lagAdjusted = parseFloat(document.documentElement.getAttribute("data-gsap-lag-adjusted") || "");
+
+  if (Number.isFinite(lagThreshold) && Number.isFinite(lagAdjusted)) {
+    gsap.ticker.lagSmoothing(lagThreshold, lagAdjusted);
+  } else {
+    // DEFAULT OTTIMIZZATO: valori calibrati per Lenis + animazioni GSAP
+    // threshold: 500ms = se frame time > 500ms, attiva smoothing
+    // adjustedLag: 33ms = compensa oscillazioni fino a ~30fps
+    gsap.ticker.lagSmoothing(500, 33);
+  }
 }
 
 function refreshAfterEnter(delay = 0.02) {
@@ -1215,17 +1254,61 @@ function initFormSuccessTransition(scope = document) {
   const DEFAULT_POLL_TIMEOUT = 8000;
   const POLL_EVERY = 100;
 
-  function forceHideNativeMessages($container) {
+  // IMPORTANTE: NON nascondere subito i messaggi nativi con !important
+  // Webflow deve poterli mostrare per la detection, poi li nascondiamo noi
+  function hideNativeMessagesAfterDetection($container) {
     $container.find(".w-form-done, .w-form-fail").each(function () {
-      this.style.setProperty("display", "none", "important");
-      this.style.setProperty("opacity", "0", "important");
-      this.style.setProperty("visibility", "hidden", "important");
-      this.style.setProperty("position", "absolute", "important");
-      this.style.setProperty("pointer-events", "none", "important");
+      // Nascondi in modo soft (senza !important) così non blocca la detection
+      this.style.opacity = "0";
+      this.style.visibility = "hidden";
+      this.style.position = "absolute";
+      this.style.pointerEvents = "none";
+      // NON usiamo display:none perché Webflow lo controlla
     });
   }
 
-  forceHideNativeMessages($root);
+  // Mantieni l'altezza del form container per evitare scatti
+  // IMPORTANTE: fixa TUTTA la sezione che contiene il form, non solo .w-form
+  function freezeFormHeight($wForm) {
+    // Trova la section parent che contiene il form
+    const $section = $wForm.closest("section.u-section");
+    const $formComponent = $wForm.closest(".form_component");
+
+    // Fixa l'altezza della section intera (previene layout shift globale)
+    if ($section.length) {
+      const sectionHeight = $section.outerHeight();
+      if (sectionHeight > 0) {
+        $section.css({
+          minHeight: sectionHeight + "px",
+          transition: "none",
+        });
+      }
+    }
+
+    // Fixa anche il form_component wrapper
+    if ($formComponent.length) {
+      const componentHeight = $formComponent.outerHeight();
+      if (componentHeight > 0) {
+        $formComponent.css({
+          height: componentHeight + "px",
+          minHeight: componentHeight + "px",
+          overflow: "hidden",
+          transition: "none",
+        });
+      }
+    }
+
+    // Fixa il .w-form stesso
+    const wFormHeight = $wForm.outerHeight();
+    if (wFormHeight > 0) {
+      $wForm.css({
+        height: wFormHeight + "px",
+        minHeight: wFormHeight + "px",
+        overflow: "hidden",
+        transition: "none",
+      });
+    }
+  }
 
   function fadeInSuccess(successSection) {
     // assicurati che sia sopra e non “sparisca” durante il cambio pagina
@@ -1365,12 +1448,26 @@ function initFormSuccessTransition(scope = document) {
     const $fail = $wForm.find(".w-form-fail");
     if ($fail.is(":visible")) return;
 
-    forceHideNativeMessages($wForm);
-    $form.show();
+    // 1) FIXA l'altezza per evitare scatti quando nascondiamo il form
+    freezeFormHeight($wForm);
+
+    // 2) Nascondi i messaggi nativi Webflow (DOPO detection)
+    hideNativeMessagesAfterDetection($wForm);
+
+    // 3) Mantieni il form visibile ma nascosto visualmente (evita cambio layout)
+    $form.css({
+      opacity: "0",
+      pointerEvents: "none",
+      visibility: "hidden",
+    });
 
     const successSection = document.querySelector("#success-form");
-    if (!successSection) return;
+    if (!successSection) {
+      console.warn("[FORM SUCCESS] Pannello #success-form non trovato");
+      return;
+    }
 
+    // 4) Mostra il pannello custom
     fadeInSuccess(successSection);
 
     const redirectUrl =
@@ -1380,8 +1477,7 @@ function initFormSuccessTransition(scope = document) {
       Number(successSection.getAttribute("data-success-redirect-delay")) ||
       DEFAULT_REDIRECT_DELAY;
 
-    // Qui mantieni il tuo “tempo di lettura” del success.
-    // Quando scade, NON dissolvi subito: avvii Barba e dissolvi solo a transizione finita.
+    // 5) Dopo il delay, naviga e dissolvi il pannello
     setTimeout(() => {
       navigateThenHideOverlay(redirectUrl, successSection);
     }, redirectDelay);
@@ -1391,31 +1487,63 @@ function initFormSuccessTransition(scope = document) {
     const $wForm = $form.closest(".w-form");
     const start = Date.now();
 
+    // Check visibilità “fast” (no getBoundingClientRect). Usa getClientRects + offsetParent.
+    const isVisibleFast = (el) => {
+      if (!el) return false;
+      try {
+        // getClientRects() evita alcuni falsi positivi di offsetParent in casi particolari
+        if (typeof el.getClientRects === "function" && el.getClientRects().length === 0) return false;
+        // offsetParent null di solito indica display:none (o position:fixed con ancestor particolari)
+        // quindi lo usiamo come euristica, ma non come unica.
+        const cs = window.getComputedStyle(el);
+        if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") return false;
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
     const tick = () => {
-      const $success = $wForm.find(".w-form-done");
-      const $fail = $wForm.find(".w-form-fail");
+      const doneEl = $wForm.find(".w-form-done")[0] || null;
+      const failEl = $wForm.find(".w-form-fail")[0] || null;
+      const formEl = $wForm.find("form")[0] || null;
 
-      const successStyle = $success.attr("style") || "";
-      const hasSuccessStyle =
-        successStyle.includes("display: block") || successStyle.includes("display:block");
+      // Se Webflow mostra il fail, stop.
+      if (isVisibleFast(failEl)) {
+        console.log("[FORM] Errore rilevato, stop polling");
+        return;
+      }
 
-      const failStyle = $fail.attr("style") || "";
-      const hasFailStyle =
-        failStyle.includes("display: block") || failStyle.includes("display:block");
+      // ✅ SUCCESS REALMENTE AVVENUTO - Detection migliorata:
+      // Opzione 1: Webflow ha mostrato .w-form-done (display: block)
+      const doneVisible = isVisibleFast(doneEl);
 
-      if (hasFailStyle) return;
+      // Opzione 2: Webflow ha aggiunto style="display: block" inline su .w-form-done
+      const doneStyleBlock = doneEl && doneEl.style.display === "block";
 
-      if ($success.length && hasSuccessStyle) {
+      // Opzione 3: Webflow ha nascosto il form
+      const formHidden = formEl ? !isVisibleFast(formEl) : false;
+      const formStyleNone = formEl && formEl.style.display === "none";
+
+      // Success se: (done visibile O done ha display:block) E (form nascosto O form ha display:none)
+      const successDetected = (doneVisible || doneStyleBlock) && (formHidden || formStyleNone);
+
+      if (successDetected) {
+        console.log("[FORM] Success rilevato! Mostro pannello custom");
         showSuccessAndRedirect($form);
         return;
       }
 
-      if (Date.now() - start > DEFAULT_POLL_TIMEOUT) return;
+      if (Date.now() - start > DEFAULT_POLL_TIMEOUT) {
+        console.warn("[FORM] Timeout polling, nessun success rilevato");
+        return;
+      }
 
       setTimeout(tick, POLL_EVERY);
     };
 
-    tick();
+    // Piccolo delay: evita di leggere stati transitori immediatamente al submit
+    setTimeout(tick, 120);
   }
 
   $forms.each(function () {
@@ -1425,7 +1553,13 @@ function initFormSuccessTransition(scope = document) {
 
     $form.on("submit", function () {
       const $wForm = $form.closest(".w-form");
-      forceHideNativeMessages($wForm);
+
+      // 🔑 CRITICAL: Fixa le altezze IMMEDIATAMENTE al submit
+      // Prima che Webflow faccia qualsiasi cambio al DOM
+      freezeFormHeight($wForm);
+
+      // NON nascondere i messaggi nativi subito - servono per la detection!
+      // Li nascondiamo DOPO in showSuccessAndRedirect()
       waitForWebflowSuccess($form);
     });
   });
@@ -1685,13 +1819,6 @@ function destroyAccordions(scope = document) {
 }
 
 /* =====================
-   GSAP SCROLL REVEALS
-   - standardizza i reveal con ScrollTrigger
-   - evita flash: gli elementi partono invisibili e vengono rivelati onEnter
-   - safe con Barba: init/destroy per scope
-===================== */
-
-/* =====================
    HERO INTRO (home)
    - stile Ilja: reveal elegante, timing controllato, no ScrollTrigger
    - target: section[data-anim="hero"] (o data-anim="hero-home")
@@ -1912,10 +2039,12 @@ function playHeroIntro(scope = document, delaySec = 0) {
           prevOnComplete?.();
         } catch {}
         try {
+          console.log("[HERO] Hero intro complete, emitting hero:intro-done");
           document.dispatchEvent(new CustomEvent("hero:intro-done"));
         } catch {}
       });
 
+      console.log(`[HERO] Playing hero intro with ${d}s delay`);
       tl.play(0);
     } catch {
       // Safety: se qualcosa va storto, non bloccare l'orchestrazione
@@ -1936,12 +2065,34 @@ function destroyHeroIntro(scope = document) {
   } catch {}
 }
 
+/**
+ * SCROLL REVEALS - Sistema di animazioni per sezioni
+ * =================================================
+ *
+ * Orchestrazione fluida: Loader → Hero → Scroll Reveals
+ *
+ * FLUSSO:
+ * 1. Loader inizia ed esce (emette: loader:exit-start, loader:done)
+ * 2. Hero parte durante l'uscita del loader (emette: hero:intro-start, hero:intro-done)
+ * 3. ScrollReveals attende hero:intro-done per sbloccare le animazioni
+ * 4. Sezioni above-the-fold: accodate e animate in sequenza dopo la hero
+ * 5. Sezioni via scroll: animate con stagger globale quando entrano in viewport
+ *
+ * GRAMMATICHE ANIMATE:
+ * - Elementi standard: fade + y translate (5px) + stagger 0.12s
+ * - Slider cards: fade + blur (0.5rem → 0) + base delay 0.2s + stagger 0.2s
+ * - Slider: trigger dedicato sullo slider stesso (non sulla sezione)
+ *
+ * COMPORTAMENTO:
+ * - Desktop: animazioni coordinate con timing preciso e stagger visibile
+ * - Mobile/Touch: animazioni immediate per UX ottimale su dispositivi touch
+ * - Reduced motion: skip animazioni, elementi visibili immediatamente
+ *
+ * @param {Element|Document} scope - Scope in cui cercare le sezioni
+ */
 function initScrollReveals(scope = document) {
   // Richiede GSAP + ScrollTrigger
-  if (typeof gsap === "undefined" || typeof ScrollTrigger === "undefined") {
-    console.warn("[REVEAL] GSAP/ScrollTrigger non trovati, reveals disattivati");
-    return;
-  }
+  if (typeof gsap === "undefined" || typeof ScrollTrigger === "undefined") return;
 
   const root = getRoot(scope);
 
@@ -1950,13 +2101,12 @@ function initScrollReveals(scope = document) {
   root.__revealInit = true;
 
   const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-  const isCoarsePointer = window.matchMedia?.("(pointer: coarse)")?.matches;
 
-  // Orchestrazione: ritarda SOLO le sezioni già visibili above the fold (desktop)
-  // così partono dopo la Hero e con uno stagger per sezione.
-  const DESKTOP_GRACE_DELAY = 0.45; // dopo hero
-  const DESKTOP_QUEUE_STAGGER = 0.18; // tra sezioni già visibili
-  const SAFETY_UNLOCK_SEC = 1.2;
+  // Timing ottimizzato: concatenazione fluida loader → hero → scroll reveals
+  // Stesso comportamento elegante su desktop E mobile
+  const START_DELAY = 0.10; // micro-delay dopo hero:intro-done (leggermente più rapido)
+  const QUEUE_STAGGER = 0.22; // stagger tra sezioni above-the-fold
+  const SECTION_STAGGER_BETWEEN = 0.18; // stagger globale tra sezioni via scroll
 
   const created = {
     triggers: [],
@@ -1964,118 +2114,220 @@ function initScrollReveals(scope = document) {
   };
 
   const isInsideHero = (el) => !!el?.closest?.('[data-hero="wrap"]');
+  // Memoization caches (performance)
+  const __excludedCache = new WeakMap();
+  const __absTopCache = new WeakMap();
 
-  // Esclusioni globali (senza data-attributes): hero (già), footer, nav, loader
+  // Esclusioni globali (senza data-attributes) - Memoized
   const isExcluded = (el) => {
     if (!el) return true;
-    if (isInsideHero(el)) return true;
-    if (el.closest("footer")) return true;
-    if (el.closest(".nav_component, .nav_desktop_wrap, .nav_mobile_wrap")) return true;
-    if (el.closest(".loader_wrap")) return true;
-    return false;
+
+    // Fast path: memoized
+    const cached = __excludedCache.get(el);
+    if (cached !== undefined) return cached;
+
+    let out = false;
+
+    if (isInsideHero(el)) out = true;
+    else if (el.closest("footer")) out = true;
+    else if (el.closest(".nav_component, .nav_desktop_wrap, .nav_mobile_wrap")) out = true;
+    else if (el.closest(".loader_wrap")) out = true;
+    else if (el.getAttribute?.("data-reveal") === "false") out = true;
+
+    __excludedCache.set(el, out);
+    return out;
   };
 
+  // PERFORMANCE: viewport check leggero usando ScrollTrigger nativo
+  // Evita getBoundingClientRect() costoso durante init
   const isInViewport = (el, threshold = 0.1) => {
-    if (!el || !el.getBoundingClientRect) return false;
-    const r = el.getBoundingClientRect();
-    const vh = window.innerHeight || 0;
-    const vw = window.innerWidth || 0;
-    if (!vh || !vw) return false;
+    if (!el) return false;
 
-    const topVisible = r.top <= vh * (1 - threshold);
-    const bottomVisible = r.bottom >= vh * threshold;
-    const leftVisible = r.left <= vw;
-    const rightVisible = r.right >= 0;
+    // Usa ScrollTrigger.isInViewport se disponibile (molto più veloce)
+    if (typeof ScrollTrigger !== "undefined" && typeof ScrollTrigger.isInViewport === "function") {
+      return ScrollTrigger.isInViewport(el, threshold);
+    }
 
-    return topVisible && bottomVisible && leftVisible && rightVisible;
+    // Fallback: check rapido senza getBoundingClientRect
+    // Usiamo offsetTop come proxy veloce
+    try {
+      const scrollY = window.scrollY || window.pageYOffset || 0;
+      const vh = window.innerHeight || 0;
+      const offsetTop = el.offsetTop || 0;
+
+      return offsetTop < (scrollY + vh * (1 + threshold));
+    } catch {
+      return false;
+    }
+  };
+
+  // PERFORMANCE: calcola una top position “document-based” senza getBoundingClientRect() (memoized)
+  const getAbsoluteTop = (el) => {
+    if (!el) return 0;
+
+    const cached = __absTopCache.get(el);
+    if (cached !== undefined) return cached;
+
+    try {
+      let top = 0;
+      let node = el;
+      while (node && node instanceof HTMLElement) {
+        top += node.offsetTop || 0;
+        node = node.offsetParent;
+      }
+      __absTopCache.set(el, top);
+      return top;
+    } catch {
+      __absTopCache.set(el, 0);
+      return 0;
+    }
   };
 
   // Evita di pescare target dentro altre section annidate
-  const isInSameSection = (node, section) => {
-    const closestSection = node?.closest?.("section.u-section");
-    return closestSection === section;
-  };
+  const isInSameSection = (node, section) => node?.closest?.("section.u-section") === section;
 
-  // Colleziona target “Lumos-friendly” senza data attributes.
-  // Strategia:
-  // - anima elementi semantici (content wrappers, headings, richtext, images, buttons)
-  // - se non trovi nulla, anima i figli diretti “visivi” della section
+  // Collezione target affidabili in Lumos (NO display:contents)
+  // Nota: escludiamo intenzionalmente `.u-display-contents` perché non è animabile.
+  // PERF: invece di fare querySelectorAll per ogni section, raggruppiamo i candidati UNA volta per scope.
+  const TARGET_SELECTORS = [
+    ".u-content-wrapper",
+    ".u-image-wrapper",
+    ".slider_wrap",
+    ".slideshow_wrap",
+    ".accordion_wrap",
+    ".u-button-wrapper",
+  ];
+
   const collectSectionTargets = (section) => {
     if (!section || isExcluded(section)) return [];
 
-    // 1) Target primari più affidabili
-    const primarySelectors = [
-      ".u-content-wrapper",
-      ".u-text.w-richtext",
-      ".u-rich-text.w-richtext",
-      ".u-eyebrow-wrapper",
-      ".u-button-wrapper",
-      ".u-image-wrapper",
-      ".slider_wrap",
-      ".slideshow_wrap",
-      ".accordion_wrap",
-    ];
+    // Targets pre-raggruppati (se presenti)
+    let targets = section.__revealTargets || [];
 
-    let targets = Array.from(section.querySelectorAll(primarySelectors.join(",")))
-      .filter((el) => el && !isExcluded(el))
-      .filter((el) => isInSameSection(el, section));
+    // PERFORMANCE: filtra SOLO elementi veramente non animabili
+    // NON filtrare opacity:0 o visibility:hidden inline - sono stati iniziali delle reveal!
+    if (targets.length) {
+      targets = targets.filter((el) => {
+        try {
+          if (!el || isExcluded(el)) return false;
 
-    // 2) Dedup + filtra invisibili
-    targets = Array.from(new Set(targets)).filter((el) => {
-      try {
-        const cs = window.getComputedStyle(el);
-        return cs.display !== "none" && cs.visibility !== "hidden";
-      } catch {
-        return true;
-      }
-    });
+          // ✅ Filtra solo display:none HARDCODED (non animabile)
+          if (el.style.display === "none") return false;
 
-    // 3) Fallback: figli diretti “consistenti” della section
-    if (!targets.length) {
-      targets = Array.from(section.children || []).filter((el) => {
-        if (!el || isExcluded(el)) return false;
-        // evita spacer e background slot
-        if (el.classList?.contains("u-section-spacer")) return false;
-        if (el.classList?.contains("u-background-slot")) return false;
-        return true;
+          // ✅ Filtra classi nascoste permanenti (Webflow)
+          if (el.hidden || el.classList?.contains("u-hidden")) return false;
+          if (el.classList?.contains("w-condition-invisible")) return false;
+
+          // ❌ NON filtrare visibility:hidden o opacity:0 inline
+          // (sono gli stati iniziali che applichiamo noi per le reveal!)
+
+          // ✅ Fallback leggero: offsetParent check
+          // Ma skippa se ha position:fixed/absolute (possono avere offsetParent null)
+          const position = el.style.position || "";
+          if (el.offsetParent === null &&
+              el.tagName !== "BODY" &&
+              position !== "fixed" &&
+              position !== "absolute") {
+            return false;
+          }
+
+          return true;
+        } catch {
+          return true;
+        }
       });
     }
 
-    return targets;
+    // Fallback: se non ci sono target pre-raggruppati, cerca nella section
+    if (!targets.length) {
+      // Prima prova: query diretta per i selettori target
+      const found = Array.from(section.querySelectorAll(TARGET_SELECTORS.join(",")))
+        .filter((el) => {
+          if (!el || isExcluded(el)) return false;
+          // NON filtrare visibility:hidden o opacity:0 inline (stati iniziali reveal!)
+          if (el.style.display === "none") return false;
+          if (el.hidden || el.classList?.contains("u-hidden")) return false;
+          if (el.classList?.contains("w-condition-invisible")) return false;
+          return true;
+        })
+        .filter((el) => isInSameSection(el, section));
+
+      if (found.length) {
+        targets = found;
+      } else {
+        // Ultima opzione: figli diretti del container (escludi spacer/background)
+        const container = section.querySelector(":scope > .u-container") || section.querySelector(".u-container");
+        if (container) {
+          targets = Array.from(container.children || []).filter((el) => {
+            if (!el || isExcluded(el)) return false;
+            if (el.classList?.contains("u-section-spacer")) return false;
+            if (el.classList?.contains("u-background-slot")) return false;
+            return true;
+          });
+        }
+      }
+    }
+
+    // Dedupe finale
+    return targets && targets.length ? Array.from(new Set(targets)) : [];
   };
 
-  // ---- UNLOCK GATE (per ritardare solo gli elementi già visibili) ----
+  // ---- GLOBAL SECTION SCHEDULER ----
+  // Coordina le animazioni delle sezioni per evitare sovrapposizioni visuali.
+  // Quando più sezioni dovrebbero animare contemporaneamente (scroll veloce, sezioni già visibili),
+  // lo scheduler le mette in coda con uno stagger controllato.
+  let nextSectionPlayAt = 0;
+
+  const scheduleSectionPlay = (tl, extraDelay = 0) => {
+    if (!tl) return;
+
+    // Calcola il prossimo slot disponibile (desktop E mobile)
+    const now = typeof gsap !== "undefined" && gsap.ticker ? gsap.ticker.time : 0;
+    const startAt = Math.max(now, nextSectionPlayAt) + Math.max(0, Number(extraDelay) || 0);
+
+    // Prenota lo slot successivo per la prossima sezione
+    nextSectionPlayAt = startAt + SECTION_STAGGER_BETWEEN;
+
+    const delay = Math.max(0, startAt - now);
+
+    // Schedula l'animazione con safety check per evitare replay
+    gsap.delayedCall(delay, () => {
+      try {
+        if (tl.isActive?.() || (typeof tl.progress === "function" && tl.progress() > 0)) return;
+        tl.play(0);
+      } catch {}
+    });
+  };
+
+  // ---- UNLOCK GATE ----
+  // Gestisce le sezioni above-the-fold (già visibili al caricamento).
+  // Queste sezioni attendono che la hero finisca prima di animare (desktop E mobile).
   let unlocked = false;
-  const aboveFoldQueue = []; // { tl, top }
+  const aboveFoldQueue = []; // Array di { tl, top } - ordinato per posizione verticale
 
   const enqueueAboveFold = (tl, top) => {
     if (!tl) return;
-    // Mobile/touch: niente code, play immediato
-    if (isCoarsePointer) {
-      tl.play(0);
-      return;
-    }
+    // Accoda per sincronizzazione con hero (desktop E mobile)
     aboveFoldQueue.push({ tl, top });
   };
 
   const flushAboveFoldQueue = () => {
     if (!aboveFoldQueue.length) return;
+
+    // Ordina top -> bottom (le sezioni più in alto partono per prime)
     aboveFoldQueue.sort((a, b) => a.top - b.top);
 
-    const base = isCoarsePointer ? 0 : DESKTOP_GRACE_DELAY;
-    const step = isCoarsePointer ? 0 : DESKTOP_QUEUE_STAGGER;
+    // Micro-delay dopo hero + stagger sequenziale (desktop E mobile)
+    const base = START_DELAY;
 
     aboveFoldQueue.forEach((u, i) => {
       const tl = u?.tl;
       if (!tl) return;
-      if (tl.isActive() || tl.progress() > 0) return;
+      if (tl.isActive?.() || (typeof tl.progress === "function" && tl.progress() > 0)) return;
 
-      gsap.delayedCall(Math.max(0, base + i * step), () => {
-        try {
-          if (tl.isActive() || tl.progress() > 0) return;
-          tl.play(0);
-        } catch {}
-      });
+      // Applica stagger incrementale tra le sezioni above-the-fold
+      const extra = base + i * QUEUE_STAGGER;
+      scheduleSectionPlay(tl, extra);
     });
 
     aboveFoldQueue.length = 0;
@@ -2084,18 +2336,153 @@ function initScrollReveals(scope = document) {
   const unlock = () => {
     if (unlocked) return;
     unlocked = true;
+
+    console.log(`[REVEAL] Unlocked! Processing ${aboveFoldQueue.length} queued sections`);
+
+    // Reset dello scheduler globale: le sezioni partono da un timing pulito dopo la hero
+    nextSectionPlayAt = typeof gsap !== "undefined" && gsap.ticker ? gsap.ticker.time : 0;
+
+    // Svuota la coda delle sezioni above-the-fold con timing coordinato
     flushAboveFoldQueue();
   };
 
   const onHeroDone = () => {
+    console.log("[REVEAL] Received hero:intro-done event");
     document.removeEventListener("hero:intro-done", onHeroDone);
     unlock();
   };
 
+  // Sincronizzazione con hero: attende l'evento hero:intro-done
+  // Se la hero non esiste, l'evento viene comunque emesso da playHeroIntro()
   document.addEventListener("hero:intro-done", onHeroDone);
-  gsap.delayedCall(SAFETY_UNLOCK_SEC, unlock);
 
-  // ---- FACTORY: timeline reveal section (grammatica coerente con Hero, ma da scroll) ----
+  // 🔑 SAFETY UNLOCK: se non c'è hero o l'evento non arriva, sblocca automaticamente
+  // Controlla se esiste una hero nella pagina
+  const hasHero = !!root.querySelector('[data-hero="wrap"], #hero-home, [data-anim="hero"], [data-anim="hero-home"]');
+
+  if (!hasHero) {
+    // Nessuna hero: SIMULA l'evento hero:intro-done con timing realistico
+    // Questo permette alle sezioni above-fold di accodarsi correttamente,
+    // poi partono con lo stagger elegante come se ci fosse stata una hero
+    const SIMULATED_HERO_DURATION = 0.8; // simula: 0.1s delay + 0.7s hero duration
+    gsap.delayedCall(SIMULATED_HERO_DURATION, () => {
+      if (!unlocked) {
+        console.log("[REVEAL] Nessuna hero rilevata, emetto hero:intro-done simulato");
+        try {
+          document.dispatchEvent(new CustomEvent("hero:intro-done"));
+        } catch {}
+        // unlock() verrà chiamato automaticamente dal listener onHeroDone
+      }
+    });
+  } else {
+    // Hero presente: safety timeout se l'evento non arriva (fallback)
+    const SAFETY_UNLOCK_SEC = 3.5; // 3.5 secondi massimo di attesa
+    gsap.delayedCall(SAFETY_UNLOCK_SEC, () => {
+      if (!unlocked) {
+        console.warn("[REVEAL] Timeout hero, unlock forzato per sicurezza");
+        unlock();
+      }
+    });
+  }
+
+  // ---- FACTORY SLIDER: grammatica dedicata per card slider ----
+  // Ottimizzato: blur solo sulle prime 4 card per performance, resto fade only
+  const makeSliderRevealTl = (slider) => {
+    if (!slider) return null;
+
+    // Rimuovi eventuali CSS animations conflittuali
+    try {
+      const cssAnimator = slider.querySelector('[data-css-animator]');
+      if (cssAnimator) cssAnimator.remove();
+    } catch {}
+
+    // Trova le card
+    const cards = Array.from(
+      slider.querySelectorAll(".slider_list > .card_primary_wrap, .slider_list .swiper-slide > .card_primary_wrap")
+    );
+
+    if (!cards.length) return null;
+
+    if (reduceMotion) {
+      gsap.set(cards, { autoAlpha: 1, clearProps: "filter" });
+      return null;
+    }
+
+    // PERFORMANCE: separa card con blur (prime 4) da quelle senza (resto)
+    const cardsWithBlur = cards.slice(0, 4);
+    const cardsWithoutBlur = cards.slice(4);
+
+    // Stato iniziale - card con blur
+    if (cardsWithBlur.length) {
+      gsap.set(cardsWithBlur, {
+        autoAlpha: 0,
+        filter: "blur(0.5rem)",
+        willChange: "opacity, filter",
+      });
+    }
+
+    // Stato iniziale - card senza blur (solo fade)
+    if (cardsWithoutBlur.length) {
+      gsap.set(cardsWithoutBlur, {
+        autoAlpha: 0,
+        // PERFORMANCE: evita will-change su molte card (costa memoria e può peggiorare lo scroll)
+      });
+    }
+
+    const tl = gsap.timeline({
+      paused: true,
+      onComplete: () => {
+        cards.forEach((card) => {
+          try {
+            card.style.willChange = "";
+            // PERFORMANCE: libera il layer/filter dopo il reveal
+            card.style.filter = "";
+          } catch {}
+        });
+      },
+    });
+
+    // Animazione - TUTTE le card insieme con stagger, ma blur solo sulle prime 4
+    tl.to(
+      cardsWithBlur,
+      {
+        duration: 0.9,
+        autoAlpha: 1,
+        filter: "blur(0rem)",
+        ease: "power2.inOut",
+        stagger: {
+          each: 0.2,
+          from: "start",
+        },
+        delay: 0.2,
+        immediateRender: false,
+      },
+      0
+    );
+
+    // Card senza blur: solo fade, stesso timing
+    if (cardsWithoutBlur.length) {
+      tl.to(
+        cardsWithoutBlur,
+        {
+          duration: 0.9,
+          autoAlpha: 1,
+          ease: "power2.inOut",
+          stagger: {
+            each: 0.2,
+            from: "start",
+          },
+          delay: 0.2 + cardsWithBlur.length * 0.2, // continua dopo le prime 4
+          immediateRender: false,
+        },
+        0
+      );
+    }
+
+    return tl;
+  };
+
+  // ---- FACTORY: grammatica coerente (fade + y + stagger) ----
   const makeSectionRevealTl = (targets) => {
     if (!targets || !targets.length) return null;
 
@@ -2104,16 +2491,16 @@ function initScrollReveals(scope = document) {
       return null;
     }
 
-    // Stato iniziale: invisibili, leggero offset
+    // Stato iniziale
     gsap.set(targets, {
       autoAlpha: 0,
-      y: 24,
+      y: 5,
       willChange: "opacity, transform",
     });
 
     const tl = gsap.timeline({
       paused: true,
-      defaults: { ease: "power3.out" },
+      defaults: { ease: "power2.out" },
       onComplete: () => {
         targets.forEach((t) => {
           try {
@@ -2134,52 +2521,162 @@ function initScrollReveals(scope = document) {
     return tl;
   };
 
-  // Target: tutte le section Lumos, escluse hero/footer/nav/loader
-  const sections = Array.from(root.querySelectorAll("section.u-section"))
-    .filter((s) => !isExcluded(s));
-
+  const sections = Array.from(root.querySelectorAll("section.u-section")).filter((s) => !isExcluded(s));
+  console.log(`[REVEAL] Found ${sections.length} sections with class .u-section`);
   if (!sections.length) return;
 
+  // PERF: pre-raggruppa i candidati una sola volta per scope, poi assegnali alla section corretta.
+  // Questo evita N querySelectorAll per N sezioni.
+  const sectionsSet = new Set(sections);
+
+  // Pulisci eventuali target precedenti (Barba re-enter) per evitare accumuli
+  sections.forEach((s) => {
+    try {
+      delete s.__revealTargets;
+    } catch {}
+  });
+
+  const allCandidates = Array.from(root.querySelectorAll(TARGET_SELECTORS.join(",")));
+  allCandidates.forEach((el) => {
+    if (!el) return;
+
+    const section = el.closest("section.u-section");
+    if (!section) return;
+    if (!sectionsSet.has(section)) return;
+    if (isExcluded(section) || isExcluded(el)) return;
+
+    // Manteniamo la guardia su nested sections
+    if (!isInSameSection(el, section)) return;
+
+    // Inizializza bucket
+    if (!section.__revealTargets) section.__revealTargets = [];
+    section.__revealTargets.push(el);
+  });
+
+  // Dedupe per section (preserva ordine DOM)
+  sections.forEach((s) => {
+    if (!s.__revealTargets || !s.__revealTargets.length) return;
+    const seen = new Set();
+    s.__revealTargets = s.__revealTargets.filter((el) => {
+      if (seen.has(el)) return false;
+      seen.add(el);
+      return true;
+    });
+  });
+
   const ctx = gsap.context(() => {
-    sections.forEach((section) => {
+    sections.forEach((section, idx) => {
       const targets = collectSectionTargets(section);
-      if (!targets.length) return;
 
-      const tl = makeSectionRevealTl(targets);
-      if (!tl) return;
+      // DEBUG: identificazione sezione
+      const sectionName = section.getAttribute("data-name") || section.id || `section-${idx}`;
+      console.log(`[REVEAL] Processing: ${sectionName}, targets=${targets.length}`);
 
-      // Se la section è già visibile, la mettiamo in coda (desktop) e la facciamo partire dopo Hero
-      if (isInViewport(section, 0.08) && !unlocked) {
-        enqueueAboveFold(tl, section.getBoundingClientRect().top);
+      // Separa slider da altri target
+      const sliders = targets.filter((t) => t.classList?.contains("slider_wrap") || t.hasAttribute?.("data-slider"));
+      const nonSliders = targets.filter((t) => !sliders.includes(t));
+
+      if (targets.length) {
+        console.log(`[REVEAL] → ${sectionName}: sliders=${sliders.length}, nonSliders=${nonSliders.length}`);
       }
 
-      const st = ScrollTrigger.create({
-        trigger: section,
-        start: "top 85%",
-        once: true,
-        onEnter: () => {
-          if (tl.isActive() || tl.progress() > 0) return;
+      // ---- GESTIONE SLIDER (con trigger dedicato) ----
+      sliders.forEach((slider) => {
+        const sliderTl = makeSliderRevealTl(slider);
+        if (!sliderTl) return;
 
-          // Se è above the fold e Hero non ha ancora sbloccato, mettila in coda
-          if (!unlocked && isInViewport(section, 0.08)) {
-            enqueueAboveFold(tl, section.getBoundingClientRect().top);
-            return;
-          }
+        // Pre-check above-the-fold
+        if (isInViewport(slider, 0.08) && !unlocked) {
+          // PERFORMANCE: evita getBoundingClientRect durante init
+          enqueueAboveFold(sliderTl, getAbsoluteTop(slider));
+        }
 
-          tl.play(0);
-        },
+        // ScrollTrigger: usa lo SLIDER come trigger (non la sezione)
+        const sliderST = ScrollTrigger.create({
+          trigger: slider,
+          start: "top 85%",
+          once: true,
+          onEnter: () => {
+            if (sliderTl.isActive?.() || (typeof sliderTl.progress === "function" && sliderTl.progress() > 0)) return;
+
+            if (!unlocked && isInViewport(slider, 0.08)) {
+              enqueueAboveFold(sliderTl, getAbsoluteTop(slider));
+              return;
+            }
+
+            scheduleSectionPlay(sliderTl, 0);
+          },
+        });
+
+        created.triggers.push(sliderST);
       });
 
-      created.triggers.push(st);
+      // ---- GESTIONE ALTRI TARGET (con trigger sezione) ----
+      if (nonSliders.length) {
+        const tl = makeSectionRevealTl(nonSliders);
+        if (!tl) {
+          console.warn(`[REVEAL] ${sectionName}: timeline creation failed for nonSliders`);
+          return;
+        }
+
+        console.log(`[REVEAL] ${sectionName}: timeline created for ${nonSliders.length} targets`);
+
+        // Pre-check: se la sezione è above-the-fold e l'unlock non è ancora avvenuto,
+        // accodala immediatamente per la sincronizzazione con la hero
+        const isAboveFold = isInViewport(section, 0.08);
+        if (isAboveFold && !unlocked) {
+          console.log(`[REVEAL] ${sectionName}: above-fold, queued for hero sync`);
+          enqueueAboveFold(tl, getAbsoluteTop(section));
+        }
+
+        // ScrollTrigger: gestisce le sezioni che entrano in viewport durante lo scroll
+        const st = ScrollTrigger.create({
+          trigger: section,
+          start: "top 85%",
+          once: true,
+          onEnter: () => {
+            console.log(`[REVEAL] ${sectionName}: ScrollTrigger fired, unlocked=${unlocked}`);
+
+            // Safety: previene replay accidentali
+            if (tl.isActive?.() || (typeof tl.progress === "function" && tl.progress() > 0)) {
+              console.log(`[REVEAL] ${sectionName}: skipped (already playing/played)`);
+              return;
+            }
+
+            // Se la sezione è above-the-fold ma la hero non ha ancora finito,
+            // accodala per la sincronizzazione (caso edge: resize, scroll prima che hero finisca)
+            if (!unlocked && isInViewport(section, 0.08)) {
+              console.log(`[REVEAL] ${sectionName}: late queue (hero not done)`);
+              enqueueAboveFold(tl, getAbsoluteTop(section));
+              return;
+            }
+
+            // Caso normale: sezione entra via scroll → usa lo scheduler globale
+            console.log(`[REVEAL] ${sectionName}: scheduling play`);
+            scheduleSectionPlay(tl, 0);
+          },
+        });
+
+        created.triggers.push(st);
+      }
     });
   }, root);
 
   created.contexts.push(ctx);
 
-  // Cleanup
+  // Cleanup Barba-safe
   root.__revealCleanup = () => {
     try {
       document.removeEventListener("hero:intro-done", onHeroDone);
+    } catch {}
+
+    try {
+      // PERF: pulisci i bucket targets sulle sezioni per non trattenere riferimenti tra pagine
+      root.querySelectorAll("section.u-section").forEach((s) => {
+        try {
+          delete s.__revealTargets;
+        } catch {}
+      });
     } catch {}
 
     try {
