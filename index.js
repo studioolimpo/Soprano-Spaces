@@ -92,6 +92,39 @@ CODE MAP
       themeResetOverlap: 0.55,
     },
 
+    // Scroll direction handler (nav hide/show on scroll)
+    scrollDir: {
+      enabled: true,
+
+      // Target element to hide/show (nav is outside Barba container)
+      // Default matches your desktop nav wrapper.
+      desktopNavSelector: ".nav_desktop_wrap",
+
+      // Keep aligned with your breakpoint conventions
+      desktopMinWidth: "60em",
+
+      // Ignore tiny deltas to avoid jitter
+      minDelta: 6,
+
+      // Only start hiding after this scroll distance
+      startedY: 80,
+
+      // Hide amount (negative moves up)
+      desktopHideYPercent: -100,
+
+      // Tween tuning
+      tweenDur: 0.7,
+      ease: "power2.out",
+
+      // Optional behavior toggles
+      setBodyAttributes: true,
+      animateOpacity: true,
+      respectReducedMotion: true,
+
+      // Barba integration: fade-only restore after virtual scroll-to-top
+      transitionFadeDur: 0.3,
+    },
+
     // Slider manager (Swiper, inside Barba container)
     sliders: {
       enabled: true,
@@ -215,7 +248,16 @@ CODE MAP
       triggerStart: "top 85%",
     },
 
-    // NEW: dividers tuning dedicato (simile a section, ma piu rapido e sobrio)
+    // Reveal children stagger [data-reveal-children="stagger"]
+    revealChildren: {
+      stagger: 0.3,
+      duration: 1.8,
+      delay: 0.2,
+      ease: "power2.out",
+      minCount: 2,
+    },
+
+    // dividers tuning dedicato (simile a section, ma piu rapido e sobrio)
     dividers: {
       duration: 1.6,
       stagger: 0.3, // se vuoi divider piu ravvicinati sopra fold
@@ -1441,6 +1483,199 @@ CODE MAP
 
 
   /* =========================
+     SCROLL DIRECTION (global, one time)
+     - Nav is outside Barba container, so we init only at bootstrap.
+     - Updates body attributes for CSS hooks.
+     - Desktop only: hides nav on scroll down after threshold, shows on scroll up.
+  ========================= */
+
+  let ScrollDir = null; // controller returned by initDetectScrollingDirection
+  let __scrollDirBarbaHooksBound = false;
+
+  function initDetectScrollingDirection() {
+    if (!CONFIG.scrollDir?.enabled) {
+      return { pause: () => {}, reset: () => {}, cleanup: () => {} };
+    }
+    if (!gsap) {
+      return { pause: () => {}, reset: () => {}, cleanup: () => {} };
+    }
+
+    // If re-called (BFCache / hot reload), cleanup previous instance first.
+    try {
+      if (ScrollDir && typeof ScrollDir.cleanup === "function") ScrollDir.cleanup();
+    } catch (_) {}
+
+    const reduceMotion = prefersReducedMotion();
+    if (CONFIG.scrollDir.respectReducedMotion !== false && reduceMotion) {
+      // Still expose attributes for CSS logic, but skip tweening.
+      try {
+        document.body.setAttribute("data-scrolling-direction", "up");
+        document.body.setAttribute("data-scrolling-started", "false");
+      } catch (_) {}
+      const noop = { pause: () => {}, reset: () => {}, cleanup: () => {} };
+      ScrollDir = noop;
+      return noop;
+    }
+
+    const desktopNav = document.querySelector(CONFIG.scrollDir.desktopNavSelector);
+    if (!desktopNav) {
+      const noop = { pause: () => {}, reset: () => {}, cleanup: () => {} };
+      ScrollDir = noop;
+      return noop;
+    }
+
+    let lastScrollY = window.scrollY || 0;
+    let ticking = false;
+
+    // Internal, coherent state
+    let isPaused = false;
+    let navHidden = false;
+
+    // Best-effort initial state inference (avoid first reset flicker)
+    try {
+      const yP = Number(gsap.getProperty(desktopNav, "yPercent")) || 0;
+      const op = Number(gsap.getProperty(desktopNav, "opacity"));
+      navHidden = yP < -1 || (Number.isFinite(op) && op <= 0.01);
+    } catch (_) {
+      navHidden = false;
+    }
+
+    const pause = (state) => {
+      isPaused = !!state;
+      // Reset baseline so resume cannot create a fake "scroll up".
+      lastScrollY = window.scrollY || 0;
+    };
+
+    const resetNav = (forceFade = true) => {
+      if (!desktopNav) return;
+
+      // Ensure no pending slide tweens survive the transition
+      gsap.killTweensOf(desktopNav);
+
+      // 1) Correct position immediately, no slide
+      gsap.set(desktopNav, { yPercent: 0 });
+
+      // 2) Opacity handling
+      if (CONFIG.scrollDir.animateOpacity === false) {
+        gsap.set(desktopNav, { opacity: 1 });
+        navHidden = false;
+        return;
+      }
+
+      if (navHidden && forceFade) {
+        gsap.fromTo(
+          desktopNav,
+          { opacity: 0 },
+          {
+            opacity: 1,
+            duration: CONFIG.scrollDir.transitionFadeDur || 0.28,
+            ease: CONFIG.scrollDir.ease,
+            overwrite: true,
+            onComplete: () => {
+              navHidden = false;
+            },
+          }
+        );
+      } else {
+        gsap.set(desktopNav, { opacity: 1 });
+        navHidden = false;
+      }
+    };
+
+    const mm = gsap.matchMedia();
+
+    mm.add(
+      {
+        isDesktop: `(min-width: ${CONFIG.scrollDir.desktopMinWidth})`,
+        isMobile: `(max-width: calc(${CONFIG.scrollDir.desktopMinWidth} - 0.001px))`,
+      },
+      (ctx) => {
+        const onScroll = () => {
+          if (ticking) return;
+          ticking = true;
+
+          requestAnimationFrame(() => {
+            const y = window.scrollY || 0;
+
+            // Pause guard: keep baseline in sync, no direction updates
+            if (isPaused) {
+              lastScrollY = y;
+              ticking = false;
+              return;
+            }
+
+            if (Math.abs(y - lastScrollY) < CONFIG.scrollDir.minDelta) {
+              ticking = false;
+              return;
+            }
+
+            const direction = y > lastScrollY ? "down" : "up";
+            const started = y > CONFIG.scrollDir.startedY;
+
+            lastScrollY = y;
+
+            if (CONFIG.scrollDir.setBodyAttributes !== false) {
+              try {
+                document.body.setAttribute("data-scrolling-direction", direction);
+                document.body.setAttribute("data-scrolling-started", String(started));
+              } catch (_) {}
+            }
+
+            // Desktop behavior only
+            if (ctx.conditions.isDesktop) {
+              // Hide only once when conditions are met
+              if (direction === "down" && started && !navHidden) {
+                gsap.to(desktopNav, {
+                  yPercent: CONFIG.scrollDir.desktopHideYPercent,
+                  duration: CONFIG.scrollDir.tweenDur,
+                  opacity: CONFIG.scrollDir.animateOpacity === false ? undefined : 0,
+                  ease: CONFIG.scrollDir.ease,
+                  overwrite: true,
+                });
+                navHidden = true;
+              }
+
+              // Show only when it was hidden
+              if (direction === "up" && navHidden) {
+                gsap.to(desktopNav, {
+                  yPercent: 0,
+                  opacity: CONFIG.scrollDir.animateOpacity === false ? undefined : 1,
+                  duration: CONFIG.scrollDir.tweenDur,
+                  ease: CONFIG.scrollDir.ease,
+                  overwrite: true,
+                });
+                navHidden = false;
+              }
+            }
+
+            ticking = false;
+          });
+        };
+
+        window.addEventListener("scroll", onScroll, { passive: true });
+
+        return () => {
+          try { window.removeEventListener("scroll", onScroll); } catch (_) {}
+        };
+      }
+    );
+
+    const cleanup = () => {
+      try { mm.revert(); } catch (_) {}
+    };
+
+    const controller = {
+      pause,
+      reset: resetNav,
+      cleanup,
+    };
+
+    ScrollDir = controller;
+    return controller;
+  }
+
+
+  /* =========================
   BOOTSTRAP (one-time globals)
   ========================= */
 
@@ -1462,6 +1697,26 @@ CODE MAP
 
     // 2d) Menu (nav is outside Barba container, init once)
     initMenu(document);
+
+    // 2e) Scroll direction (nav hide/show on desktop, global)
+    ScrollDir = initDetectScrollingDirection();
+
+    // 2f) Barba integration for scroll-direction (pause during transitions + fade-only restore)
+    if (barba && barba.hooks && __scrollDirBarbaHooksBound === false) {
+      __scrollDirBarbaHooksBound = true;
+
+      barba.hooks.beforeLeave(() => {
+        try { ScrollDir?.pause(true); } catch (_) {}
+      });
+
+      // NOTE: ScrollDir reset moved to transitionEnter() for proper sync with hero animation
+      // barba.hooks.afterEnter(() => {
+      //   requestAnimationFrame(() => {
+      //     try { ScrollDir?.reset(true); } catch (_) {}
+      //     try { ScrollDir?.pause(false); } catch (_) {}
+      //   });
+      // });
+    }
 
     // 3) Scroll engine (Lenis) + resume handlers
     Scroll.initLenis();
@@ -1490,6 +1745,24 @@ CODE MAP
       if (child.classList.contains("u-embed-css")) return false;
       if (child.classList.contains("w-embed")) return false;
       if (child.tagName === "STYLE") return false;
+      return true;
+    });
+  }
+
+  /* =========================
+     STAGGERED CHILDREN HELPER
+  ========================= */
+  function getStaggerableElements(section) {
+    if (!section) return [];
+
+    const elements = Array.from(
+      section.querySelectorAll("[data-reveal-children='stagger']")
+    );
+
+    // Filtra elementi non validi
+    return elements.filter((el) => {
+      if (el.classList.contains("w-condition-invisible")) return false;
+      if (el.classList.contains("swiper-slide-duplicate")) return false;
       return true;
     });
   }
@@ -1605,6 +1878,12 @@ CODE MAP
       } else {
         const realSection = getRealElement(section);
         gsap.set(realSection, { autoAlpha: 0 });
+      }
+
+      // Nascondi elementi staggerabili
+      const staggerable = getStaggerableElements(section);
+      if (staggerable.length) {
+        gsap.set(staggerable, { autoAlpha: 0 });
       }
     });
 
@@ -2355,7 +2634,40 @@ CODE MAP
   ========================= */
   function animateSection(section) {
     const children = getAnimatableChildren(section);
+    const staggerable = getStaggerableElements(section);
+    const minCount = CONFIG.revealChildren?.minCount || 2;
 
+    // Se abbiamo abbastanza elementi staggerabili
+    if (staggerable.length >= minCount) {
+      const tl = gsap.timeline();
+
+      // Anima i children normali (esclusi quelli staggerabili)
+      const normalChildren = children.filter(
+        (child) => !child.hasAttribute("data-reveal-children")
+      );
+
+      if (normalChildren.length) {
+        tl.to(normalChildren, {
+          autoAlpha: 1,
+          duration: CONFIG.sections.duration,
+          stagger: CONFIG.sections.childStagger,
+          ease: CONFIG.sections.ease,
+        }, 0);
+      }
+
+      // Stagger degli elementi marcati (usa config dedicata)
+      const revealDelay = CONFIG.revealChildren.delay || 0;
+      tl.to(staggerable, {
+        autoAlpha: 1,
+        duration: CONFIG.revealChildren.duration,
+        stagger: CONFIG.revealChildren.stagger,
+        ease: CONFIG.revealChildren.ease,
+      }, revealDelay);
+
+      return tl;
+    }
+
+    // Comportamento standard
     if (children.length) {
       return gsap.to(children, {
         autoAlpha: 1,
@@ -2655,7 +2967,16 @@ CODE MAP
     tl.to(next, { autoAlpha: 1, duration: CONFIG.transition.enterDuration }, CONFIG.transition.enterDelay);
 
     const heroAt = Math.max(0, CONFIG.transition.enterDelay + CONFIG.overlap.transitionToHero);
-    tl.call(() => onHeroStart?.(), null, heroAt);
+    tl.call(() => {
+      // Reset nav BEFORE hero starts: pause, reset, resume
+      // This ensures nav is in final position and fade (if visible) runs in parallel with hero
+      try { ScrollDir?.pause(true); } catch (_) {}
+      try { ScrollDir?.reset(true); } catch (_) {}
+      try { ScrollDir?.pause(false); } catch (_) {}
+      
+      // Now hero can start
+      onHeroStart?.();
+    }, null, heroAt);
 
     // CLEANUP DETERMINISTICO
     tl.call(() => {
