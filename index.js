@@ -1979,6 +1979,96 @@ CODE MAP
     return slideCount;
   }
 
+  /* =========================
+     SLIDER CLICK ZONES (optional)
+     - Enabled by variant="collection" or attribute data-slider-click-zones
+     - Injects two transparent zones (prev/next) over the slider
+     - Desktop only by default (pointer: fine)
+  ========================= */
+
+  function shouldEnableClickZones(component, variantName) {
+    if (!component) return false;
+    if (String(variantName || "").toLowerCase() === "collection") return true;
+    return component.hasAttribute("data-slider-click-zones");
+  }
+
+  function mountSliderClickZones(component, swiperElement, instance) {
+    if (!component || !swiperElement || !instance) return () => {};
+
+    // Desktop only (avoid hijacking touch swipe)
+    const isFinePointer = !!window.matchMedia && window.matchMedia("(pointer: fine)").matches;
+    if (!isFinePointer) return () => {};
+
+    // Prevent double-mount
+    if (component.querySelector("[data-slider-click-zones-wrapper]")) return () => {};
+
+    // Ensure a positioning context
+    try {
+      const cs = window.getComputedStyle(swiperElement);
+      if (cs.position === "static") swiperElement.style.position = "relative";
+    } catch (_) {
+      // Fallback: still set position
+      swiperElement.style.position = "relative";
+    }
+
+    const wrap = document.createElement("div");
+    wrap.setAttribute("data-slider-click-zones-wrapper", "true");
+    wrap.style.position = "absolute";
+    wrap.style.inset = "0";
+    wrap.style.display = "flex";
+    wrap.style.pointerEvents = "none";
+    wrap.style.zIndex = "5";
+
+    const left = document.createElement("button");
+    left.type = "button";
+    left.setAttribute("aria-label", "Previous slide");
+    left.setAttribute("data-slider-click-zone", "prev");
+    left.style.flex = "1";
+    left.style.background = "transparent";
+    left.style.border = "0";
+    left.style.padding = "0";
+    left.style.margin = "0";
+    left.style.cursor = "pointer";
+    left.style.pointerEvents = "auto";
+
+    const right = document.createElement("button");
+    right.type = "button";
+    right.setAttribute("aria-label", "Next slide");
+    right.setAttribute("data-slider-click-zone", "next");
+    right.style.flex = "1";
+    right.style.background = "transparent";
+    right.style.border = "0";
+    right.style.padding = "0";
+    right.style.margin = "0";
+    right.style.cursor = "pointer";
+    right.style.pointerEvents = "auto";
+
+    // Avoid click when user is selecting text or dragging
+    const safeSlidePrev = (e) => {
+      try { e?.preventDefault?.(); } catch (_) {}
+      try { instance.slidePrev(); } catch (_) {}
+    };
+    const safeSlideNext = (e) => {
+      try { e?.preventDefault?.(); } catch (_) {}
+      try { instance.slideNext(); } catch (_) {}
+    };
+
+    left.addEventListener("click", safeSlidePrev);
+    right.addEventListener("click", safeSlideNext);
+
+    wrap.appendChild(left);
+    wrap.appendChild(right);
+
+    // Mount on the Swiper element so it overlays slides but stays inside the component
+    swiperElement.appendChild(wrap);
+
+    return () => {
+      try { left.removeEventListener("click", safeSlidePrev); } catch (_) {}
+      try { right.removeEventListener("click", safeSlideNext); } catch (_) {}
+      try { wrap.remove(); } catch (_) {}
+    };
+  }
+
   function initSliders(scope = document) {
     if (!CONFIG.sliders?.enabled) return () => {};
 
@@ -2117,6 +2207,14 @@ CODE MAP
       try {
         const instance = new SwiperClass(swiperElement, swiperConfig);
         component.__swiper = instance;
+
+        // Optional click zones (variant="collection" or data-slider-click-zones)
+        if (shouldEnableClickZones(component, cfg.name)) {
+          component.__clickZonesCleanup = mountSliderClickZones(component, swiperElement, instance);
+        } else {
+          component.__clickZonesCleanup = null;
+        }
+
         instances.push(component);
 
         log(`[SLIDERS] init OK (${cfg.name})`, component);
@@ -2134,6 +2232,9 @@ CODE MAP
       const phase = String(mode || "hard").toLowerCase();
       instances.forEach((component) => {
         const instance = component.__swiper;
+        // Remove injected click zones (if any)
+        try { component.__clickZonesCleanup?.(); } catch (_) {}
+        component.__clickZonesCleanup = null;
         // Always stop reacting to input immediately.
         try { component.style.pointerEvents = "none"; } catch (_) {}
         try {
