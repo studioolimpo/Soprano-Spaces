@@ -1121,42 +1121,6 @@ CODE MAP
     );
   }
 
-  /* =========================
-     CUSTOM CURSOR (global, one time)
-  ========================= */
-
-  function initCustomCursor() {
-    if (window.__customCursorInit) return;
-    window.__customCursorInit = true;
-
-    if (!gsap) return;
-
-    const cursorEl = document.querySelector(".cursor");
-    if (!cursorEl) {
-      log("Custom cursor: .cursor not found, skip");
-      return;
-    }
-
-    // Ensure proper transform origin and avoid layout thrash, and never block clicks
-    gsap.set(cursorEl, {
-      xPercent: -50,
-      yPercent: -50,
-      willChange: "transform",
-      pointerEvents: "none",
-      userSelect: "none",
-    });
-
-    const xTo = gsap.quickTo(cursorEl, "x", { duration: 0.6, ease: "power3" });
-    const yTo = gsap.quickTo(cursorEl, "y", { duration: 0.6, ease: "power3" });
-
-    window.addEventListener("mousemove", (e) => {
-      xTo(e.clientX);
-      yTo(e.clientY);
-    });
-
-    log("Custom cursor init OK");
-  }
-
 
   /* =========================
      SIGNATURE (global, one time)
@@ -1689,19 +1653,17 @@ CODE MAP
     // 2) Click guard (avoid Barba on same-page anchors)
     preventSamePageClicks();
 
-    // 2b) Custom cursor (outside Barba container, bind once)
-    initCustomCursor();
 
-    // 2c) Console signature (credits, one time)
+    // 2b) Console signature (credits, one time)
     initSignature();
 
-    // 2d) Menu (nav is outside Barba container, init once)
+    // 2c) Menu (nav is outside Barba container, init once)
     initMenu(document);
 
-    // 2e) Scroll direction (nav hide/show on desktop, global)
+    // 2d) Scroll direction (nav hide/show on desktop, global)
     ScrollDir = initDetectScrollingDirection();
 
-    // 2f) Barba integration for scroll-direction (pause during transitions + fade-only restore)
+    // 2e) Barba integration for scroll-direction (pause during transitions + fade-only restore)
     if (barba && barba.hooks && __scrollDirBarbaHooksBound === false) {
       __scrollDirBarbaHooksBound = true;
 
