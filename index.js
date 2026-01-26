@@ -44,8 +44,8 @@ CODE MAP
 
     // Loader manager
     loader: {
-      minDuration: 2500,
-      fadeInDuration: 1.8,
+      minDuration: 2000,
+      fadeInDuration: 1.5,
       fadeOutDuration: 1.2,
       ease: "power2.inOut",
     },
@@ -2927,7 +2927,7 @@ CODE MAP
     if (contain) tlIn.set(contain, { autoAlpha: 1 }, 0);
 
     if (paths.length) {
-      tlIn.to(paths, { autoAlpha: 1, duration: CONFIG.loader.fadeInDuration, stagger: 0.05 }, 0.4);
+      tlIn.to(paths, { autoAlpha: 1, duration: CONFIG.loader.fadeInDuration, stagger: 0.05 }, 0.2);
     }
 
     // Testo / claim (entra dopo il logo, sobrio)
