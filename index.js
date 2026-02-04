@@ -90,7 +90,7 @@ CODE MAP
       panelCloseOpacityDelay: 0.2,
 
       // navigation timing (start Barba while menu is closing)
-      navTransitionOverlapDelay: 0.25,
+      navTransitionOverlapDelay: 0.08,
 
       themeResetOverlap: 0.55,
     },
