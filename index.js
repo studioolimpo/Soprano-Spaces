@@ -2904,7 +2904,7 @@ CODE MAP
     }
 
     const paths = loader.querySelectorAll("svg path");
-    const contain = loader.querySelector(".loader_contain");
+    const logo = loader.querySelector(".loader_logo");
     const text = loader.querySelector(".loader_layout .u-text");
 
     scrollLock();
@@ -2914,7 +2914,7 @@ CODE MAP
 
     // Stato iniziale deterministico + anti-flicker: i contenuti possono essere nascosti via CSS
     // (es. html.is-loading .loader_contain[data-prevent-flicker="true"]) e li sblocchiamo appena parte la timeline.
-    if (contain) gsap.set(contain, { autoAlpha: 0, y: 0 });
+    if (logo) gsap.set(contain, { autoAlpha: 0, y: 0 });
     if (paths.length) gsap.set(paths, { autoAlpha: 0 });
     if (text) gsap.set(text, { autoAlpha: 0 });
 
@@ -2947,7 +2947,7 @@ CODE MAP
     const tlOut = gsap.timeline({ defaults: { ease: CONFIG.loader.ease } });
 
     // Uscita ordinata: contenuti (logo + testo) insieme con leggero shift Y, poi wrapper
-    if (contain) tlOut.to(contain, { autoAlpha: 0, y: -8, duration: CONFIG.loader.fadeOutDuration, force3D: true, clearProps: "transform" }, 0);
+    if (logo) tlOut.to(logo, { autoAlpha: 0, y: -8, duration: CONFIG.loader.fadeOutDuration, force3D: true, clearProps: "transform" }, 0);
 
     tlOut.to(loader, { autoAlpha: 0, duration: CONFIG.loader.fadeOutDuration }, 0.1);
 
