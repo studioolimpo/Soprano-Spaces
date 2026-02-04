@@ -792,6 +792,68 @@ CODE MAP
   }
 
 
+  /* =========================
+     PREFETCH (best effort)
+     - Uses barba.prefetch when available, otherwise warms cache via fetch
+  ========================= */
+
+  const Prefetch = (() => {
+    const seen = new Set();
+
+    const canPrefetch = (href) => {
+      if (!href) return false;
+      const h = String(href).trim();
+      if (!h || h === "#" || h.startsWith("#")) return false;
+      if (h.startsWith("mailto:") || h.startsWith("tel:") || h.startsWith("javascript:")) return false;
+      return true;
+    };
+
+    const toInternalUrl = (href) => {
+      try {
+        const u = new URL(href, window.location.href);
+        if (u.origin !== window.location.origin) return null;
+        if (!/^https?:$/.test(u.protocol)) return null;
+        return u;
+      } catch {
+        return null;
+      }
+    };
+
+    const prefetch = (href) => {
+      if (!canPrefetch(href)) return;
+      const u = toInternalUrl(href);
+      if (!u) return;
+
+      // Avoid prefetching current page
+      if (u.pathname === window.location.pathname && u.search === window.location.search) return;
+
+      const key = u.href;
+      if (seen.has(key)) return;
+      seen.add(key);
+
+      // Prefer Barba native prefetch when available
+      try {
+        if (barba && typeof barba.prefetch === "function") {
+          barba.prefetch(key);
+          return;
+        }
+      } catch (_) {}
+
+      // Fallback: warm browser cache
+      try {
+        fetch(key, {
+          method: "GET",
+          credentials: "same-origin",
+          cache: "force-cache",
+          headers: { "X-Requested-With": "prefetch" },
+        }).then((res) => {
+          try { return res.text(); } catch (_) { return null; }
+        }).catch(() => {});
+      } catch (_) {}
+    };
+
+    return { prefetch };
+  })();
 
   function isDesktop() {
     return !!window.matchMedia && window.matchMedia("(min-width: 60em)").matches;
@@ -1421,6 +1483,17 @@ CODE MAP
 
           forceThemeBrand();
           shiftPageDown();
+
+          // PREFETCH: pre-carica tutti i link del menu mobile (riduce il gap barba.go() -> [BARBA] before)
+          try {
+            navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
+              if (!link) return;
+              if (link.target === "_blank") return;
+              const href = link.getAttribute("href") || "";
+              if (!href || href === "#" || href.startsWith("#")) return;
+              Prefetch.prefetch(href);
+            });
+          } catch (_) {}
         }, LOCK_DUR);
       };
 
@@ -3251,6 +3324,8 @@ CODE MAP
 
   barba.init({
     preventRunning: true,
+    prefetch: true,
+    timeout: 7000,
     debug: CONFIG.debug,
 
     transitions: [
