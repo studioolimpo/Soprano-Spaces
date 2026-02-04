@@ -2947,7 +2947,7 @@ CODE MAP
     const tlOut = gsap.timeline({ defaults: { ease: CONFIG.loader.ease } });
 
     // Uscita ordinata: contenuti (logo + testo) insieme con leggero shift Y, poi wrapper
-    if (contain) tlOut.to(contain, { autoAlpha: 0, y: -8, duration: CONFIG.loader.fadeOutDuration, clearProps: "transform" }, 0);
+    if (contain) tlOut.to(contain, { autoAlpha: 0, y: -8, duration: CONFIG.loader.fadeOutDuration, force3D: true, clearProps: "transform" }, 0);
 
     tlOut.to(loader, { autoAlpha: 0, duration: CONFIG.loader.fadeOutDuration }, 0.1);
 
