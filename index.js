@@ -1396,38 +1396,80 @@ CODE MAP
         return samePath && sameQuery && sameHash;
       };
 
+      // Robust tap binding for iOS Safari (click can be flaky with layered/animated UI)
+      // Binds pointerup + touchend + click with de-dupe guard.
+      const bindTap = (el, handler) => {
+        if (!el || typeof handler !== "function") return;
+
+        const TAP_GUARD_MS = 450;
+        let lastTapTs = 0;
+
+        const run = (e) => {
+          lastTapTs = Date.now();
+          handler(e);
+        };
+
+        const onPointerUp = (e) => {
+          // Keep mouse clicks on desktop as normal click
+          if (e && e.pointerType === "mouse") return;
+          run(e);
+        };
+
+        const onTouchEnd = (e) => run(e);
+
+        const onClick = (e) => {
+          // Ignore synthetic click fired after touchend/pointerup
+          if (Date.now() - lastTapTs < TAP_GUARD_MS) return;
+          handler(e);
+        };
+
+        try {
+          el.addEventListener("pointerup", onPointerUp, { passive: false });
+        } catch (_) {
+          el.addEventListener("pointerup", onPointerUp);
+        }
+
+        try {
+          el.addEventListener("touchend", onTouchEnd, { passive: false });
+        } catch (_) {
+          el.addEventListener("touchend", onTouchEnd);
+        }
+
+        el.addEventListener("click", onClick);
+      };
+
       const onToggle = (e) => {
-        e.preventDefault();
+        try { e?.preventDefault?.(); } catch (_) {}
         if (isNavTransitioning) return;
         const isOpen = getStatus() === "active";
         isOpen ? closeNav() : openNav();
       };
 
       const onClose = (e) => {
-        e.preventDefault();
+        try { e?.preventDefault?.(); } catch (_) {}
         if (isNavTransitioning) return;
         closeNav();
       };
 
       navEl.querySelectorAll('[data-navigation-toggle="toggle"]').forEach((btn) => {
-        btn.addEventListener("click", onToggle);
+        bindTap(btn, onToggle);
       });
 
       navEl.querySelectorAll('[data-navigation-toggle="close"]').forEach((btn) => {
-        btn.addEventListener("click", onClose);
+        bindTap(btn, onClose);
       });
 
       navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
         const onLink = (e) => {
           if (isNavTransitioning) return;
           if (getStatus() === "active" && isSameDestination(link)) {
-            e.preventDefault();
+            try { e?.preventDefault?.(); } catch (_) {}
             closeNav();
             return;
           }
           closeNav();
         };
-        link.addEventListener("click", onLink);
+        bindTap(link, onLink);
       });
 
       // ESC
