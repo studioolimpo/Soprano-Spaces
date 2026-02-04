@@ -1170,6 +1170,38 @@ CODE MAP
       navEl.dataset.scriptInitialized = "true";
 
       const navWrap = navEl.querySelector(CONFIG.menu.wrapSelector) || navEl;
+      // Menu panel element (for hard isolation on iOS)
+      const menuPanel = navEl.querySelector(".nav_mobile_menu_wrap") || null;
+
+      // Hard-state helpers (avoid iOS 17 WebKit edge-cases with clip-path layers)
+      const setPanelOpenState = (isOpen) => {
+        if (!menuPanel) return;
+        try {
+          if (isOpen) {
+            menuPanel.removeAttribute("inert");
+            menuPanel.setAttribute("aria-hidden", "false");
+            menuPanel.style.pointerEvents = "auto";
+            menuPanel.style.visibility = "visible";
+          } else {
+            // Keep it visible during close animation; we will inert+hide after timings.
+            menuPanel.setAttribute("aria-hidden", "true");
+          }
+        } catch (_) {}
+      };
+
+      const finalizePanelClosedState = () => {
+        if (!menuPanel) return;
+        try {
+          menuPanel.setAttribute("inert", "");
+          menuPanel.setAttribute("aria-hidden", "true");
+          menuPanel.style.pointerEvents = "none";
+          menuPanel.style.visibility = "hidden";
+        } catch (_) {}
+      };
+
+      // Init closed state once
+      finalizePanelClosedState();
+
       const navBg = navEl.querySelector(CONFIG.menu.bgSelector) || document.querySelector(CONFIG.menu.bgSelector);
 
       const getShiftTarget = () =>
@@ -1389,8 +1421,14 @@ CODE MAP
           };
 
           setStatus("active");
+          // Ensure panel becomes interactive immediately
+          setPanelOpenState(true);
 
           try { Scroll.lock(); } catch {}
+          // iOS: reduce click delay and improve touch responsiveness
+          try {
+            navEl.style.touchAction = "manipulation";
+          } catch (_) {}
 
           forceThemeBrand();
           shiftPageDown();
@@ -1405,6 +1443,8 @@ CODE MAP
 
         withNavTransitionLock(() => {
           setStatus("not-active");
+          // Keep panel non-interactive ASAP (CSS will animate out)
+          setPanelOpenState(false);
           shiftPageUp(CONFIG.menu.shiftCloseDelay);
 
           try { Scroll.unlock(); } catch {}
@@ -1412,6 +1452,11 @@ CODE MAP
           const snap = navEl.__themeSnapshot;
 
           gsap.delayedCall(CLOSE_THEME_RESET_AT, () => restorePreviousTheme(snap));
+          // After the close animation completes, hard-hide/inert the panel
+          try {
+            const totalCloseMs = Math.max(0, CLOSE_TOTAL_DURATION) * 1000;
+            setTimeout(finalizePanelClosedState, totalCloseMs + 50);
+          } catch (_) {}
         }, LOCK_DUR);
       };
 
@@ -1450,34 +1495,60 @@ CODE MAP
         closeNav();
       };
 
-      // iOS 17.x fix: touchend fallback + de-dupe against synthetic click
-      let __touchHandled = false;
+      // iOS 17.x: use Pointer Events first (more reliable than click on WebKit),
+      // and keep click as a fallback. Deduplicate multiple event streams.
+      let __lastTriggerTs = 0;
+      const TRIGGER_DEDUP_MS = 650;
 
-      const wrapTouchClick = (fn) => {
+      const shouldSkipAsDuplicate = () => {
+        const now = Date.now();
+        if (now - __lastTriggerTs < TRIGGER_DEDUP_MS) return true;
+        __lastTriggerTs = now;
+        return false;
+      };
+
+      const wrapInput = (fn) => {
         return (e) => {
-          const type = e?.type;
-          if (type === "touchend") {
-            __touchHandled = true;
-            try { if (e?.cancelable) e.preventDefault(); } catch (_) {}
-          } else if (type === "click" && __touchHandled) {
-            __touchHandled = false;
-            return;
-          }
+          // Prefer pointerup; avoid the synthetic click/touch chain firing twice.
+          const t = e?.type || "";
+
+          // If we already handled a recent event, skip.
+          if (shouldSkipAsDuplicate()) return;
+
+          // Prevent ghost clicks / 300ms delay behaviours.
+          try {
+            if (t === "pointerup" || t === "touchend") {
+              if (e?.cancelable) e.preventDefault();
+            }
+          } catch (_) {}
+
           fn(e);
         };
       };
 
-      const handleToggle = wrapTouchClick(onToggle);
-      const handleClose = wrapTouchClick(onClose);
+      const handleToggle = wrapInput(onToggle);
+      const handleClose = wrapInput(onClose);
+
+      const bindInteractive = (el, handler) => {
+        if (!el) return;
+        try {
+          // Make sure the control itself doesn't inherit a bad touch-action.
+          el.style.touchAction = "manipulation";
+        } catch (_) {}
+
+        // Pointer Events (best)
+        el.addEventListener("pointerup", handler, { passive: false });
+        // Fallbacks
+        el.addEventListener("touchend", handler, { passive: false });
+        el.addEventListener("click", handler);
+      };
 
       navEl.querySelectorAll('[data-navigation-toggle="toggle"]').forEach((btn) => {
-        btn.addEventListener("click", handleToggle);
-        btn.addEventListener("touchend", handleToggle, { passive: false });
+        bindInteractive(btn, handleToggle);
       });
 
       navEl.querySelectorAll('[data-navigation-toggle="close"]').forEach((btn) => {
-        btn.addEventListener("click", handleClose);
-        btn.addEventListener("touchend", handleClose, { passive: false });
+        bindInteractive(btn, handleClose);
       });
 
       navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
@@ -1491,9 +1562,8 @@ CODE MAP
           closeNav();
         };
 
-        const handleLink = wrapTouchClick(onLink);
-        link.addEventListener("click", handleLink);
-        link.addEventListener("touchend", handleLink, { passive: false });
+        const handleLink = wrapInput(onLink);
+        bindInteractive(link, handleLink);
       });
 
       // ESC
@@ -1508,18 +1578,23 @@ CODE MAP
         try { if (unlockTimeoutId) clearTimeout(unlockTimeoutId); } catch {}
         try { if (recoveryTimeoutId) clearTimeout(recoveryTimeoutId); } catch {}
         try {
+          const removeInteractive = (el, handler) => {
+            if (!el) return;
+            try { el.removeEventListener("pointerup", handler); } catch (_) {}
+            try { el.removeEventListener("touchend", handler); } catch (_) {}
+            try { el.removeEventListener("click", handler); } catch (_) {}
+          };
+
           navEl.querySelectorAll('[data-navigation-toggle="toggle"]').forEach((btn) => {
-            btn.removeEventListener("click", handleToggle);
-            btn.removeEventListener("touchend", handleToggle);
+            removeInteractive(btn, handleToggle);
           });
           navEl.querySelectorAll('[data-navigation-toggle="close"]').forEach((btn) => {
-            btn.removeEventListener("click", handleClose);
-            btn.removeEventListener("touchend", handleClose);
+            removeInteractive(btn, handleClose);
           });
+
+          // Links: best-effort removal
           navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
-            // We cannot easily reference per-link handler closures here without storing them,
-            // so we rely on nav being outside Barba container and init only once.
-            // Still, best-effort removal by cloning is avoided; keep no-op.
+            // We used a closure per-link; we don't store it. Leave as-is.
           });
         } catch (_) {}
         delete navEl.dataset.scriptInitialized;
