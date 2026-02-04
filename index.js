@@ -966,6 +966,15 @@ CODE MAP
         document.documentElement.classList.add("is-scroll-locked");
         document.body.classList.add("is-scroll-locked");
       }
+
+      // iOS 17.x fix: ensure the nav remains interactive even while scroll is locked
+      try {
+        const nav = document.querySelector(CONFIG.menu.rootSelector);
+        if (nav) {
+          nav.style.touchAction = "auto";
+          nav.style.pointerEvents = "auto";
+        }
+      } catch (_) {}
     },
 
     unlock() {
@@ -1429,37 +1438,62 @@ CODE MAP
       };
 
       const onToggle = (e) => {
-        e.preventDefault();
+        try { if (e?.cancelable) e.preventDefault(); } catch (_) {}
         if (isNavTransitioning) return;
         const isOpen = getStatus() === "active";
         isOpen ? closeNav() : openNav();
       };
 
       const onClose = (e) => {
-        e.preventDefault();
+        try { if (e?.cancelable) e.preventDefault(); } catch (_) {}
         if (isNavTransitioning) return;
         closeNav();
       };
 
+      // iOS 17.x fix: touchend fallback + de-dupe against synthetic click
+      let __touchHandled = false;
+
+      const wrapTouchClick = (fn) => {
+        return (e) => {
+          const type = e?.type;
+          if (type === "touchend") {
+            __touchHandled = true;
+            try { if (e?.cancelable) e.preventDefault(); } catch (_) {}
+          } else if (type === "click" && __touchHandled) {
+            __touchHandled = false;
+            return;
+          }
+          fn(e);
+        };
+      };
+
+      const handleToggle = wrapTouchClick(onToggle);
+      const handleClose = wrapTouchClick(onClose);
+
       navEl.querySelectorAll('[data-navigation-toggle="toggle"]').forEach((btn) => {
-        btn.addEventListener("click", onToggle);
+        btn.addEventListener("click", handleToggle);
+        btn.addEventListener("touchend", handleToggle, { passive: false });
       });
 
       navEl.querySelectorAll('[data-navigation-toggle="close"]').forEach((btn) => {
-        btn.addEventListener("click", onClose);
+        btn.addEventListener("click", handleClose);
+        btn.addEventListener("touchend", handleClose, { passive: false });
       });
 
       navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
         const onLink = (e) => {
           if (isNavTransitioning) return;
           if (getStatus() === "active" && isSameDestination(link)) {
-            e.preventDefault();
+            try { if (e?.cancelable) e.preventDefault(); } catch (_) {}
             closeNav();
             return;
           }
           closeNav();
         };
-        link.addEventListener("click", onLink);
+
+        const handleLink = wrapTouchClick(onLink);
+        link.addEventListener("click", handleLink);
+        link.addEventListener("touchend", handleLink, { passive: false });
       });
 
       // ESC
@@ -1473,6 +1507,21 @@ CODE MAP
         try { document.removeEventListener("visibilitychange", onVisibilityChange); } catch {}
         try { if (unlockTimeoutId) clearTimeout(unlockTimeoutId); } catch {}
         try { if (recoveryTimeoutId) clearTimeout(recoveryTimeoutId); } catch {}
+        try {
+          navEl.querySelectorAll('[data-navigation-toggle="toggle"]').forEach((btn) => {
+            btn.removeEventListener("click", handleToggle);
+            btn.removeEventListener("touchend", handleToggle);
+          });
+          navEl.querySelectorAll('[data-navigation-toggle="close"]').forEach((btn) => {
+            btn.removeEventListener("click", handleClose);
+            btn.removeEventListener("touchend", handleClose);
+          });
+          navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
+            // We cannot easily reference per-link handler closures here without storing them,
+            // so we rely on nav being outside Barba container and init only once.
+            // Still, best-effort removal by cloning is avoided; keep no-op.
+          });
+        } catch (_) {}
         delete navEl.dataset.scriptInitialized;
       });
     });
