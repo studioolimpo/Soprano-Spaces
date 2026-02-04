@@ -1,7 +1,6 @@
 /*
-core.js, Studio Olimpo Blueprint
-
-LUXURY VERSION v4.3.1 + iOS 17.x FIX
+index.js
+Soprano Spaces v1.0
 
 - Registro animazioni hero per namespace
 - NO overlay, NO scale
@@ -90,10 +89,6 @@ CODE MAP
       panelCloseDuration: 1.0,
       panelCloseOpacityDelay: 0.2,
       themeResetOverlap: 0.55,
-
-      // iOS 17.x fix: recovery settings
-      maxLockTime: 2500,
-      recoveryCheckDelay: 300,
     },
 
     // Scroll direction handler (nav hide/show on scroll)
@@ -966,15 +961,6 @@ CODE MAP
         document.documentElement.classList.add("is-scroll-locked");
         document.body.classList.add("is-scroll-locked");
       }
-
-      // iOS 17.x fix: ensure the nav remains interactive even while scroll is locked
-      try {
-        const nav = document.querySelector(CONFIG.menu.rootSelector);
-        if (nav) {
-          nav.style.touchAction = "auto";
-          nav.style.pointerEvents = "auto";
-        }
-      } catch (_) {}
     },
 
     unlock() {
@@ -1170,74 +1156,6 @@ CODE MAP
       navEl.dataset.scriptInitialized = "true";
 
       const navWrap = navEl.querySelector(CONFIG.menu.wrapSelector) || navEl;
-      // Menu panel element (for hard isolation on iOS)
-      const menuPanel = navEl.querySelector(".nav_mobile_menu_wrap") || null;
-
-      // Webflow Navbar elements (if this nav is a Webflow Navbar component)
-      const wfNavButton = navEl.querySelector(".w-nav-button") || null;
-      const wfNavMenu = navEl.querySelector(".w-nav-menu") || null;
-      const wfNavOverlay = navEl.querySelector(".w-nav-overlay") || null;
-
-      // IMPORTANT: your CSS animations (menuOpen/menuClose) are triggered by `.w-nav-button.w--open`
-      // and/or `.w-nav-menu` state. If we don't mirror Webflow's open classes/attributes,
-      // the page can shift (our JS) but the menu panel stays closed (CSS never triggers).
-      const setWebflowNavbarOpen = (isOpen) => {
-        try {
-          if (wfNavButton) {
-            wfNavButton.classList.toggle("w--open", !!isOpen);
-            wfNavButton.setAttribute("aria-expanded", isOpen ? "true" : "false");
-          }
-        } catch (_) {}
-
-        try {
-          if (wfNavMenu) {
-            wfNavMenu.classList.toggle("w--open", !!isOpen);
-          }
-        } catch (_) {}
-
-        try {
-          if (wfNavOverlay) {
-            // Webflow toggles overlay visibility; enforce deterministic state.
-            wfNavOverlay.style.display = isOpen ? "block" : "";
-          }
-        } catch (_) {}
-
-        try {
-          // Some Webflow CSS keys off the navbar root having `w--open`.
-          navEl.classList.toggle("w--open", !!isOpen);
-        } catch (_) {}
-      };
-
-      // Hard-state helpers (avoid iOS 17 WebKit edge-cases with clip-path layers)
-      const setPanelOpenState = (isOpen) => {
-        if (!menuPanel) return;
-        try {
-          if (isOpen) {
-            menuPanel.removeAttribute("inert");
-            menuPanel.setAttribute("aria-hidden", "false");
-            menuPanel.style.pointerEvents = "auto";
-            menuPanel.style.visibility = "visible";
-          } else {
-            // Keep it visible during close animation; we will inert+hide after timings.
-            menuPanel.setAttribute("aria-hidden", "true");
-          }
-        } catch (_) {}
-      };
-
-      const finalizePanelClosedState = () => {
-        if (!menuPanel) return;
-        try {
-          menuPanel.setAttribute("inert", "");
-          menuPanel.setAttribute("aria-hidden", "true");
-          menuPanel.style.pointerEvents = "none";
-          menuPanel.style.visibility = "hidden";
-        } catch (_) {}
-      };
-
-      // Init closed state once
-      finalizePanelClosedState();
-      setWebflowNavbarOpen(false);
-
       const navBg = navEl.querySelector(CONFIG.menu.bgSelector) || document.querySelector(CONFIG.menu.bgSelector);
 
       const getShiftTarget = () =>
@@ -1383,26 +1301,14 @@ CODE MAP
       const getToggleButtons = () =>
         Array.from(navEl.querySelectorAll('[data-navigation-toggle="toggle"], [data-navigation-toggle="close"]'));
 
-      // iOS 17.x fix: NON usare disabled attribute
       const setTogglesEnabled = (enabled) => {
         const btns = getToggleButtons();
         btns.forEach((btn) => {
           btn.style.pointerEvents = enabled ? "" : "none";
-          btn.style.cursor = "";
+          btn.style.cursor = enabled ? "" : "wait";
+          if (btn.tagName === "BUTTON") btn.disabled = !enabled;
           btn.setAttribute("aria-disabled", enabled ? "false" : "true");
         });
-      };
-
-      // iOS 17.x fix: setTimeout + recovery automatico
-      let unlockTimeoutId = null;
-      let recoveryTimeoutId = null;
-
-      const forceUnlock = () => {
-        if (!isNavTransitioning) return;
-        isNavTransitioning = false;
-        setTogglesEnabled(true);
-        if (unlockTimeoutId) { clearTimeout(unlockTimeoutId); unlockTimeoutId = null; }
-        if (recoveryTimeoutId) { clearTimeout(recoveryTimeoutId); recoveryTimeoutId = null; }
       };
 
       const withNavTransitionLock = (fn, durationSeconds) => {
@@ -1410,35 +1316,19 @@ CODE MAP
         isNavTransitioning = true;
         setTogglesEnabled(false);
 
-        if (unlockTimeoutId) clearTimeout(unlockTimeoutId);
-        if (recoveryTimeoutId) clearTimeout(recoveryTimeoutId);
-
-        try { fn?.(); } catch (e) {
+        try { fn?.(); } catch {
           isNavTransitioning = false;
           setTogglesEnabled(true);
           return;
         }
 
-        const durationMs = Math.max(0, Number(durationSeconds || 0)) * 1000;
-
-        unlockTimeoutId = setTimeout(() => {
+        const unlock = () => {
           isNavTransitioning = false;
           setTogglesEnabled(true);
-          unlockTimeoutId = null;
-        }, durationMs);
+        };
 
-        recoveryTimeoutId = setTimeout(forceUnlock, CONFIG.menu.maxLockTime || 2500);
+        gsap.delayedCall(Math.max(0, Number(durationSeconds || 0)), unlock);
       };
-
-      // iOS 17.x fix: recovery su visibility change
-      const onVisibilityChange = () => {
-        if (document.visibilityState === "visible" && isNavTransitioning) {
-          setTimeout(() => {
-            if (isNavTransitioning) forceUnlock();
-          }, CONFIG.menu.recoveryCheckDelay || 300);
-        }
-      };
-      document.addEventListener("visibilitychange", onVisibilityChange);
 
       const openNav = () => {
         const LOCK_DUR = Math.max(CONFIG.menu.themeOpenDuration, 0.6);
@@ -1457,17 +1347,8 @@ CODE MAP
           };
 
           setStatus("active");
-          // Ensure panel becomes interactive immediately
-          setPanelOpenState(true);
-
-          // Ensure Webflow navbar classes/attrs are in OPEN state (triggers CSS menu animation)
-          setWebflowNavbarOpen(true);
 
           try { Scroll.lock(); } catch {}
-          // iOS: reduce click delay and improve touch responsiveness
-          try {
-            navEl.style.touchAction = "manipulation";
-          } catch (_) {}
 
           forceThemeBrand();
           shiftPageDown();
@@ -1482,11 +1363,6 @@ CODE MAP
 
         withNavTransitionLock(() => {
           setStatus("not-active");
-          // Keep panel non-interactive ASAP (CSS will animate out)
-          setPanelOpenState(false);
-
-          // Ensure Webflow navbar classes/attrs are in CLOSED state (triggers CSS menu close animation)
-          setWebflowNavbarOpen(false);
           shiftPageUp(CONFIG.menu.shiftCloseDelay);
 
           try { Scroll.unlock(); } catch {}
@@ -1494,11 +1370,6 @@ CODE MAP
           const snap = navEl.__themeSnapshot;
 
           gsap.delayedCall(CLOSE_THEME_RESET_AT, () => restorePreviousTheme(snap));
-          // After the close animation completes, hard-hide/inert the panel
-          try {
-            const totalCloseMs = Math.max(0, CLOSE_TOTAL_DURATION) * 1000;
-            setTimeout(finalizePanelClosedState, totalCloseMs + 50);
-          } catch (_) {}
         }, LOCK_DUR);
       };
 
@@ -1525,87 +1396,37 @@ CODE MAP
       };
 
       const onToggle = (e) => {
-        try { if (e?.cancelable) e.preventDefault(); } catch (_) {}
+        e.preventDefault();
         if (isNavTransitioning) return;
         const isOpen = getStatus() === "active";
         isOpen ? closeNav() : openNav();
       };
 
       const onClose = (e) => {
-        try { if (e?.cancelable) e.preventDefault(); } catch (_) {}
+        e.preventDefault();
         if (isNavTransitioning) return;
         closeNav();
       };
 
-      // iOS 17.x: use Pointer Events first (more reliable than click on WebKit),
-      // and keep click as a fallback. Deduplicate multiple event streams.
-      let __lastTriggerTs = 0;
-      const TRIGGER_DEDUP_MS = 650;
-
-      const shouldSkipAsDuplicate = () => {
-        const now = Date.now();
-        if (now - __lastTriggerTs < TRIGGER_DEDUP_MS) return true;
-        __lastTriggerTs = now;
-        return false;
-      };
-
-      const wrapInput = (fn) => {
-        return (e) => {
-          // Prefer pointerup; avoid the synthetic click/touch chain firing twice.
-          const t = e?.type || "";
-
-          // If we already handled a recent event, skip.
-          if (shouldSkipAsDuplicate()) return;
-
-          // Prevent ghost clicks / 300ms delay behaviours.
-          try {
-            if (t === "pointerup" || t === "touchend") {
-              if (e?.cancelable) e.preventDefault();
-            }
-          } catch (_) {}
-
-          fn(e);
-        };
-      };
-
-      const handleToggle = wrapInput(onToggle);
-      const handleClose = wrapInput(onClose);
-
-      const bindInteractive = (el, handler) => {
-        if (!el) return;
-        try {
-          // Make sure the control itself doesn't inherit a bad touch-action.
-          el.style.touchAction = "manipulation";
-        } catch (_) {}
-
-        // Pointer Events (best)
-        el.addEventListener("pointerup", handler, { passive: false });
-        // Fallbacks
-        el.addEventListener("touchend", handler, { passive: false });
-        el.addEventListener("click", handler);
-      };
-
       navEl.querySelectorAll('[data-navigation-toggle="toggle"]').forEach((btn) => {
-        bindInteractive(btn, handleToggle);
+        btn.addEventListener("click", onToggle);
       });
 
       navEl.querySelectorAll('[data-navigation-toggle="close"]').forEach((btn) => {
-        bindInteractive(btn, handleClose);
+        btn.addEventListener("click", onClose);
       });
 
       navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
         const onLink = (e) => {
           if (isNavTransitioning) return;
           if (getStatus() === "active" && isSameDestination(link)) {
-            try { if (e?.cancelable) e.preventDefault(); } catch (_) {}
+            e.preventDefault();
             closeNav();
             return;
           }
           closeNav();
         };
-
-        const handleLink = wrapInput(onLink);
-        bindInteractive(link, handleLink);
+        link.addEventListener("click", onLink);
       });
 
       // ESC
@@ -1616,29 +1437,6 @@ CODE MAP
 
       cleanups.push(() => {
         try { document.removeEventListener("keydown", escHandler); } catch {}
-        try { document.removeEventListener("visibilitychange", onVisibilityChange); } catch {}
-        try { if (unlockTimeoutId) clearTimeout(unlockTimeoutId); } catch {}
-        try { if (recoveryTimeoutId) clearTimeout(recoveryTimeoutId); } catch {}
-        try {
-          const removeInteractive = (el, handler) => {
-            if (!el) return;
-            try { el.removeEventListener("pointerup", handler); } catch (_) {}
-            try { el.removeEventListener("touchend", handler); } catch (_) {}
-            try { el.removeEventListener("click", handler); } catch (_) {}
-          };
-
-          navEl.querySelectorAll('[data-navigation-toggle="toggle"]').forEach((btn) => {
-            removeInteractive(btn, handleToggle);
-          });
-          navEl.querySelectorAll('[data-navigation-toggle="close"]').forEach((btn) => {
-            removeInteractive(btn, handleClose);
-          });
-
-          // Links: best-effort removal
-          navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
-            // We used a closure per-link; we don't store it. Leave as-is.
-          });
-        } catch (_) {}
         delete navEl.dataset.scriptInitialized;
       });
     });
