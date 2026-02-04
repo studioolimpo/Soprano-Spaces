@@ -1,7 +1,7 @@
 /*
 core.js, Studio Olimpo Blueprint
 
-LUXURY VERSION v4.3 + DIVIDERS
+LUXURY VERSION v4.3.1 + iOS 17.x FIX
 
 - Registro animazioni hero per namespace
 - NO overlay, NO scale
@@ -90,6 +90,10 @@ CODE MAP
       panelCloseDuration: 1.0,
       panelCloseOpacityDelay: 0.2,
       themeResetOverlap: 0.55,
+
+      // iOS 17.x fix: recovery settings
+      maxLockTime: 2500,
+      recoveryCheckDelay: 300,
     },
 
     // Scroll direction handler (nav hide/show on scroll)
@@ -1302,14 +1306,26 @@ CODE MAP
       const getToggleButtons = () =>
         Array.from(navEl.querySelectorAll('[data-navigation-toggle="toggle"], [data-navigation-toggle="close"]'));
 
+      // iOS 17.x fix: NON usare disabled attribute
       const setTogglesEnabled = (enabled) => {
         const btns = getToggleButtons();
         btns.forEach((btn) => {
           btn.style.pointerEvents = enabled ? "" : "none";
-          btn.style.cursor = enabled ? "" : "wait";
-          if (btn.tagName === "BUTTON") btn.disabled = !enabled;
+          btn.style.cursor = "";
           btn.setAttribute("aria-disabled", enabled ? "false" : "true");
         });
+      };
+
+      // iOS 17.x fix: setTimeout + recovery automatico
+      let unlockTimeoutId = null;
+      let recoveryTimeoutId = null;
+
+      const forceUnlock = () => {
+        if (!isNavTransitioning) return;
+        isNavTransitioning = false;
+        setTogglesEnabled(true);
+        if (unlockTimeoutId) { clearTimeout(unlockTimeoutId); unlockTimeoutId = null; }
+        if (recoveryTimeoutId) { clearTimeout(recoveryTimeoutId); recoveryTimeoutId = null; }
       };
 
       const withNavTransitionLock = (fn, durationSeconds) => {
@@ -1317,19 +1333,35 @@ CODE MAP
         isNavTransitioning = true;
         setTogglesEnabled(false);
 
-        try { fn?.(); } catch {
+        if (unlockTimeoutId) clearTimeout(unlockTimeoutId);
+        if (recoveryTimeoutId) clearTimeout(recoveryTimeoutId);
+
+        try { fn?.(); } catch (e) {
           isNavTransitioning = false;
           setTogglesEnabled(true);
           return;
         }
 
-        const unlock = () => {
+        const durationMs = Math.max(0, Number(durationSeconds || 0)) * 1000;
+
+        unlockTimeoutId = setTimeout(() => {
           isNavTransitioning = false;
           setTogglesEnabled(true);
-        };
+          unlockTimeoutId = null;
+        }, durationMs);
 
-        gsap.delayedCall(Math.max(0, Number(durationSeconds || 0)), unlock);
+        recoveryTimeoutId = setTimeout(forceUnlock, CONFIG.menu.maxLockTime || 2500);
       };
+
+      // iOS 17.x fix: recovery su visibility change
+      const onVisibilityChange = () => {
+        if (document.visibilityState === "visible" && isNavTransitioning) {
+          setTimeout(() => {
+            if (isNavTransitioning) forceUnlock();
+          }, CONFIG.menu.recoveryCheckDelay || 300);
+        }
+      };
+      document.addEventListener("visibilitychange", onVisibilityChange);
 
       const openNav = () => {
         const LOCK_DUR = Math.max(CONFIG.menu.themeOpenDuration, 0.6);
@@ -1396,80 +1428,38 @@ CODE MAP
         return samePath && sameQuery && sameHash;
       };
 
-      // Robust tap binding for iOS Safari (click can be flaky with layered/animated UI)
-      // Binds pointerup + touchend + click with de-dupe guard.
-      const bindTap = (el, handler) => {
-        if (!el || typeof handler !== "function") return;
-
-        const TAP_GUARD_MS = 450;
-        let lastTapTs = 0;
-
-        const run = (e) => {
-          lastTapTs = Date.now();
-          handler(e);
-        };
-
-        const onPointerUp = (e) => {
-          // Keep mouse clicks on desktop as normal click
-          if (e && e.pointerType === "mouse") return;
-          run(e);
-        };
-
-        const onTouchEnd = (e) => run(e);
-
-        const onClick = (e) => {
-          // Ignore synthetic click fired after touchend/pointerup
-          if (Date.now() - lastTapTs < TAP_GUARD_MS) return;
-          handler(e);
-        };
-
-        try {
-          el.addEventListener("pointerup", onPointerUp, { passive: false });
-        } catch (_) {
-          el.addEventListener("pointerup", onPointerUp);
-        }
-
-        try {
-          el.addEventListener("touchend", onTouchEnd, { passive: false });
-        } catch (_) {
-          el.addEventListener("touchend", onTouchEnd);
-        }
-
-        el.addEventListener("click", onClick);
-      };
-
       const onToggle = (e) => {
-        try { e?.preventDefault?.(); } catch (_) {}
+        e.preventDefault();
         if (isNavTransitioning) return;
         const isOpen = getStatus() === "active";
         isOpen ? closeNav() : openNav();
       };
 
       const onClose = (e) => {
-        try { e?.preventDefault?.(); } catch (_) {}
+        e.preventDefault();
         if (isNavTransitioning) return;
         closeNav();
       };
 
       navEl.querySelectorAll('[data-navigation-toggle="toggle"]').forEach((btn) => {
-        bindTap(btn, onToggle);
+        btn.addEventListener("click", onToggle);
       });
 
       navEl.querySelectorAll('[data-navigation-toggle="close"]').forEach((btn) => {
-        bindTap(btn, onClose);
+        btn.addEventListener("click", onClose);
       });
 
       navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
         const onLink = (e) => {
           if (isNavTransitioning) return;
           if (getStatus() === "active" && isSameDestination(link)) {
-            try { e?.preventDefault?.(); } catch (_) {}
+            e.preventDefault();
             closeNav();
             return;
           }
           closeNav();
         };
-        bindTap(link, onLink);
+        link.addEventListener("click", onLink);
       });
 
       // ESC
@@ -1480,6 +1470,9 @@ CODE MAP
 
       cleanups.push(() => {
         try { document.removeEventListener("keydown", escHandler); } catch {}
+        try { document.removeEventListener("visibilitychange", onVisibilityChange); } catch {}
+        try { if (unlockTimeoutId) clearTimeout(unlockTimeoutId); } catch {}
+        try { if (recoveryTimeoutId) clearTimeout(recoveryTimeoutId); } catch {}
         delete navEl.dataset.scriptInitialized;
       });
     });
