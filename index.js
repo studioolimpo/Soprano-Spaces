@@ -2923,7 +2923,7 @@ CODE MAP
     const tlIn = gsap.timeline({ defaults: { ease: "power2.out" } });
 
     // Sblocca la visibilita dei contenuti del loader (se nascosti via CSS con data-prevent-flicker)
-    if (contain) tlIn.set(contain, { autoAlpha: 1 }, 0);
+    if (logo) tlIn.set(logo, { autoAlpha: 1 }, 0);
 
     if (paths.length) {
       tlIn.to(paths, { autoAlpha: 1, duration: CONFIG.loader.fadeInDuration, stagger: 0.05 }, 0.2);
