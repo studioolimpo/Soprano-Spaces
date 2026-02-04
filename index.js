@@ -2914,7 +2914,7 @@ CODE MAP
 
     // Stato iniziale deterministico + anti-flicker: i contenuti possono essere nascosti via CSS
     // (es. html.is-loading .loader_contain[data-prevent-flicker="true"]) e li sblocchiamo appena parte la timeline.
-    if (contain) gsap.set(contain, { autoAlpha: 0, y: 0 });
+    if (contain) gsap.set(contain, { autoAlpha: 0, force3D: true, willChange: "opacity, visibility" });
     if (paths.length) gsap.set(paths, { autoAlpha: 0 });
     if (text) gsap.set(text, { autoAlpha: 0 });
 
@@ -2956,6 +2956,7 @@ CODE MAP
 
     await tlOut;
 
+    if (contain) gsap.set(contain, { clearProps: "all" });
     gsap.set(loader, { display: "none" });
     document.documentElement.classList.remove("is-loading");
     scrollUnlock();
