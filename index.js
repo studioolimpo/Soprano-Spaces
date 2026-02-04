@@ -1480,65 +1480,34 @@ CODE MAP
         btn.addEventListener("click", onClose);
       });
 
-      // Fast close for navigation (non-blocking, lets Barba proceed immediately)
-      const closeNavFast = () => {
-        // Skip transition lock - don't block navigation
-        setStatus("not-active");
+      navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
+      const onLink = (e) => {
+        if (isNavTransitioning) return;
 
-        // Shift page up faster
-        const shiftTarget = getShiftTarget();
-        if (shiftTarget) {
-          gsap.killTweensOf(shiftTarget);
-          gsap.to(shiftTarget, {
-            y: 0,
-            duration: 0.4,
-            ease: "power2.out",
-            overwrite: "auto",
-          });
+        const isOpen = getStatus() === "active";
+        if (!isOpen) return;
+
+        // Same page: just close, no navigation
+        if (isSameDestination(link)) {
+          e.preventDefault();
+          closeNav();
+          return;
         }
 
-        // Unlock scroll immediately for Barba
-        try { Scroll.unlock(); } catch (_) {}
+        // Different page: close nav + trigger Barba with overlap
+        e.preventDefault();
+        closeNav();
 
-        // Fast theme reset
-        const snap = navEl.__themeSnapshot;
-        if (snap) {
-          gsap.delayedCall(0.15, () => restorePreviousTheme(snap));
-        }
-        navEl.__themeSnapshot = null;
-
-        // Fade out nav background quickly
-        if (navBg) {
-          gsap.killTweensOf(navBg);
-          gsap.to(navBg, {
-            autoAlpha: 0,
-            duration: 0.3,
-            ease: "power2.out",
-            overwrite: "auto",
+        const href = link.getAttribute("href");
+        if (href && barba && typeof barba.go === "function") {
+          // Start Barba transition after short delay (overlap with menu close)
+          gsap.delayedCall(0.25, () => {
+            barba.go(href);
           });
         }
       };
-
-      navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
-        const onLink = (e) => {
-          if (isNavTransitioning) return;
-
-          const isOpen = getStatus() === "active";
-          if (!isOpen) return; // Menu already closed, let event bubble naturally
-
-          // Same page destination: prevent navigation, just close menu
-          if (isSameDestination(link)) {
-            e.preventDefault();
-            closeNav();
-            return;
-          }
-
-          // Different page: fast close (non-blocking) + let Barba handle navigation
-          closeNavFast();
-          // Don't preventDefault - Barba will intercept and start transition immediately
-        };
-        link.addEventListener("click", onLink);
-      });
+      link.addEventListener("click", onLink);
+    });
 
       // ESC
       const escHandler = (e) => {
