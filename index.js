@@ -787,8 +787,70 @@ CODE MAP
   }
 
 
+
   function isDesktop() {
     return !!window.matchMedia && window.matchMedia("(min-width: 60em)").matches;
+  }
+
+
+  /* =========================
+     LANGUAGE SWITCHER (Webflow i18n)
+     - Forces hard reload when switching language for the same page
+     - Example: /studio -> /en/studio
+     - Avoids Barba transitions by destroying Barba before navigation
+  ========================= */
+
+  function initLanguageSwitcher() {
+    document.querySelectorAll("a[href]").forEach((link) => {
+      link.removeEventListener("click", handleLangSwitch);
+      link.addEventListener("click", handleLangSwitch);
+    });
+  }
+
+  function handleLangSwitch(e) {
+    const link = e.currentTarget;
+    const href = link.getAttribute("href");
+    if (!href || href.startsWith("#") || link.target === "_blank") return;
+
+    let currentURL;
+    let nextURL;
+
+    try {
+      currentURL = new URL(window.location.href);
+      nextURL = new URL(href, window.location.origin);
+    } catch {
+      return;
+    }
+
+    // Se stai cliccando sullo stesso URL attuale, non fare nulla
+    if (currentURL.pathname === nextURL.pathname) {
+      return;
+    }
+
+    const currentLang = currentURL.pathname.startsWith("/en") ? "en" : "it";
+    const nextLang = nextURL.pathname.startsWith("/en") ? "en" : "it";
+
+    const normalizePath = (path) => path.replace(/^\/en/, "").replace(/\/$/, "");
+    const currentPathNormalized = normalizePath(currentURL.pathname);
+    const nextPathNormalized = normalizePath(nextURL.pathname);
+
+    const isSamePath = currentPathNormalized === nextPathNormalized;
+    const isLangChange = currentLang !== nextLang;
+
+    if (isSamePath && isLangChange) {
+      e.preventDefault();
+
+      // Disattiva temporaneamente Barba per evitare transizione
+      try {
+        if (window.barba && typeof window.barba.destroy === "function") {
+          window.barba.destroy();
+        } else if (typeof barba !== "undefined" && barba && typeof barba.destroy === "function") {
+          barba.destroy();
+        }
+      } catch (_) {}
+
+      window.location.href = nextURL.href;
+    }
   }
 
   function flattenDisplayContents(slot) {
@@ -1652,6 +1714,8 @@ CODE MAP
     // 2) Click guard (avoid Barba on same-page anchors)
     preventSamePageClicks();
 
+    // 2a) Language switcher (force hard reload on i18n swap)
+    try { initLanguageSwitcher(); } catch (_) {}
 
     // 2b) Console signature (credits, one time)
     initSignature();
@@ -1677,6 +1741,11 @@ CODE MAP
       //     try { ScrollDir?.pause(false); } catch (_) {}
       //   });
       // });
+
+      // Re-bind language switcher after each Barba swap
+      barba.hooks.afterEnter(() => {
+        try { initLanguageSwitcher(); } catch (_) {}
+      });
     }
 
     // 3) Scroll engine (Lenis) + resume handlers
