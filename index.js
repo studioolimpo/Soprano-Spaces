@@ -1484,51 +1484,84 @@ CODE MAP
         btn.addEventListener("click", onClose);
       });
 
+      // Link clicks inside mobile nav
+      // Goal: close nav (theme restore preserved) AND start Barba transition in overlap.
       navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
         const onLink = (e) => {
           if (isNavTransitioning) return;
 
-          const href = (link.getAttribute("href") || "").trim();
-          if (!href || href.startsWith("#") || link.target === "_blank") return;
+          const hrefRaw = (link.getAttribute("href") || "").trim();
+          if (!hrefRaw || hrefRaw === "#" || hrefRaw.startsWith("#")) return;
+          if (link.target === "_blank") return;
 
+          // If nav isn't open, do nothing special.
           const isOpen = getStatus() === "active";
           if (!isOpen) return;
 
-          // Same page: just close, no navigation
-          if (isSameDestination(link)) {
-            e.preventDefault();
+          // Resolve destination
+          let dest;
+          try {
+            dest = new URL(hrefRaw, window.location.href);
+          } catch {
+            return;
+          }
+
+          // External links: allow default behavior, but still close nav quickly.
+          if (dest.origin !== window.location.origin) {
             closeNav();
             return;
           }
 
-          // Different page: close nav + start Barba in overlap (do NOT wait for menu to finish)
+          // Same destination: just close (no navigation)
+          if (isSameDestination(link)) {
+            e.preventDefault();
+            try { e.stopImmediatePropagation(); } catch (_) {}
+            try { e.stopPropagation(); } catch (_) {}
+            closeNav();
+            return;
+          }
+
+          // Different internal page: we own the navigation.
           e.preventDefault();
+          try { e.stopImmediatePropagation(); } catch (_) {}
+          try { e.stopPropagation(); } catch (_) {}
+
+          // Start close immediately (keeps your theme restore + scroll unlock timings)
           closeNav();
 
           const OVERLAP_DELAY = Number.isFinite(Number(CONFIG.menu.navTransitionOverlapDelay))
             ? Number(CONFIG.menu.navTransitionOverlapDelay)
             : 0.25;
 
+          // Prevent double navigation if something else triggers it
+          if (navEl.__pendingNavCall && typeof navEl.__pendingNavCall.kill === "function") {
+            try { navEl.__pendingNavCall.kill(); } catch (_) {}
+          }
+
           const go = () => {
-            // Prefer Barba for SPA-like transition, fallback to hard nav
+            // Prefer Barba, fallback to hard navigation
             try {
               if (barba && typeof barba.go === "function") {
-                barba.go(href);
+                barba.go(dest.href);
                 return;
               }
             } catch (_) {}
-            window.location.href = href;
+            window.location.href = dest.href;
           };
 
-          // Start navigation slightly after close starts so theme/shift kick in first
           try {
-            gsap.delayedCall(Math.max(0, OVERLAP_DELAY), go);
+            navEl.__pendingNavCall = gsap.delayedCall(Math.max(0, OVERLAP_DELAY), go);
           } catch (_) {
-            setTimeout(go, Math.max(0, OVERLAP_DELAY) * 1000);
+            const t = setTimeout(go, Math.max(0, OVERLAP_DELAY) * 1000);
+            navEl.__pendingNavCall = { kill: () => clearTimeout(t) };
           }
         };
 
-        link.addEventListener("click", onLink);
+        // Use capture so we run before Barba/Webflow click handlers.
+        link.addEventListener("click", onLink, true);
+
+        // store for deterministic cleanup
+        link.__soMenuLinkHandler = onLink;
       });
 
       // ESC
@@ -1538,7 +1571,23 @@ CODE MAP
       document.addEventListener("keydown", escHandler);
 
       cleanups.push(() => {
-        try { document.removeEventListener("keydown", escHandler); } catch {}
+        try { document.removeEventListener("keydown", escHandler); } catch (_) {}
+
+        // kill any pending delayed navigation
+        try { navEl.__pendingNavCall?.kill?.(); } catch (_) {}
+        navEl.__pendingNavCall = null;
+
+        // remove our captured link handlers
+        try {
+          navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
+            const h = link.__soMenuLinkHandler;
+            if (h) {
+              try { link.removeEventListener("click", h, true); } catch (_) {}
+              link.__soMenuLinkHandler = null;
+            }
+          });
+        } catch (_) {}
+
         delete navEl.dataset.scriptInitialized;
       });
     });
