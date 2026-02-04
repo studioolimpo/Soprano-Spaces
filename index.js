@@ -1527,11 +1527,14 @@ CODE MAP
           try { e.stopPropagation(); } catch (_) {}
 
           // Start close immediately (keeps your theme restore + scroll unlock timings)
+          console.log("[NAV] closeNav() chiamato", performance.now());
           closeNav();
 
           const OVERLAP_DELAY = Number.isFinite(Number(CONFIG.menu.navTransitionOverlapDelay))
             ? Number(CONFIG.menu.navTransitionOverlapDelay)
             : 0.25;
+
+          console.log("[NAV] OVERLAP_DELAY =", OVERLAP_DELAY);
 
           // Prevent double navigation if something else triggers it
           if (navEl.__pendingNavCall && typeof navEl.__pendingNavCall.kill === "function") {
@@ -1539,6 +1542,7 @@ CODE MAP
           }
 
           const go = () => {
+            console.log("[NAV] barba.go() chiamato", performance.now());
             // Prefer Barba, fallback to hard navigation
             try {
               if (barba && typeof barba.go === "function") {
