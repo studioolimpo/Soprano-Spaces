@@ -88,6 +88,10 @@ CODE MAP
       // panel timing (aligned to CSS)
       panelCloseDuration: 1.0,
       panelCloseOpacityDelay: 0.2,
+
+      // navigation timing (start Barba while menu is closing)
+      navTransitionOverlapDelay: 0.25,
+
       themeResetOverlap: 0.55,
     },
 
@@ -1481,32 +1485,50 @@ CODE MAP
       });
 
       navEl.querySelectorAll(CONFIG.menu.linkCloseSelectors).forEach((link) => {
-      const onLink = (e) => {
-        if (isNavTransitioning) return;
+        const onLink = (e) => {
+          if (isNavTransitioning) return;
 
-        const isOpen = getStatus() === "active";
-        if (!isOpen) return;
+          const href = (link.getAttribute("href") || "").trim();
+          if (!href || href.startsWith("#") || link.target === "_blank") return;
 
-        // Same page: just close, no navigation
-        if (isSameDestination(link)) {
+          const isOpen = getStatus() === "active";
+          if (!isOpen) return;
+
+          // Same page: just close, no navigation
+          if (isSameDestination(link)) {
+            e.preventDefault();
+            closeNav();
+            return;
+          }
+
+          // Different page: close nav + start Barba in overlap (do NOT wait for menu to finish)
           e.preventDefault();
           closeNav();
-          return;
-        }
 
-        // Different page: close nav + trigger Barba with overlap
-        e.preventDefault();
-        closeNav();
+          const OVERLAP_DELAY = Number.isFinite(Number(CONFIG.menu.navTransitionOverlapDelay))
+            ? Number(CONFIG.menu.navTransitionOverlapDelay)
+            : 0.25;
 
-        const href = link.getAttribute("href");
-        if (href && barba && typeof barba.go === "function") {
-          // Start Barba transition after short delay (overlap with menu close)
-          gsap.delayedCall(0.25, () => {
-            barba.go(href);
-          });
-        }
-      };
-      link.addEventListener("click", onLink);
+          const go = () => {
+            // Prefer Barba for SPA-like transition, fallback to hard nav
+            try {
+              if (barba && typeof barba.go === "function") {
+                barba.go(href);
+                return;
+              }
+            } catch (_) {}
+            window.location.href = href;
+          };
+
+          // Start navigation slightly after close starts so theme/shift kick in first
+          try {
+            gsap.delayedCall(Math.max(0, OVERLAP_DELAY), go);
+          } catch (_) {
+            setTimeout(go, Math.max(0, OVERLAP_DELAY) * 1000);
+          }
+        };
+
+        link.addEventListener("click", onLink);
       });
 
       // ESC
