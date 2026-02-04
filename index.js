@@ -31,6 +31,7 @@ CODE MAP
   ========================= */
   const CONFIG = {
     debug: false,
+    debugBarbaTimings: true,
 
     // Lenis manager
     lenis: {
@@ -1839,6 +1840,26 @@ CODE MAP
       barba.hooks.afterEnter(() => {
         try { initLanguageSwitcher(); } catch (_) {}
       });
+    }
+
+    // 2f) Barba timing logs (debug)
+    if (barba && barba.hooks && !window.__soBarbaTimingHooksBound) {
+      window.__soBarbaTimingHooksBound = true;
+
+      const _t = () => (performance.now ? performance.now().toFixed(1) : String(Date.now()));
+      const _logBarba = (label) => {
+        if (!CONFIG.debugBarbaTimings) return;
+        try { console.log(`[BARBA] ${label}`, _t()); } catch (_) {}
+      };
+
+      barba.hooks.before(() => _logBarba("before"));
+      barba.hooks.beforeLeave(() => _logBarba("beforeLeave"));
+      barba.hooks.leave(() => _logBarba("leave"));
+      barba.hooks.afterLeave(() => _logBarba("afterLeave"));
+      barba.hooks.beforeEnter(() => _logBarba("beforeEnter"));
+      barba.hooks.enter(() => _logBarba("enter"));
+      barba.hooks.afterEnter(() => _logBarba("afterEnter"));
+      barba.hooks.after(() => _logBarba("after"));
     }
 
     // 3) Scroll engine (Lenis) + resume handlers
