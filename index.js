@@ -1507,7 +1507,7 @@ CODE MAP
         }
       };
       link.addEventListener("click", onLink);
-    });
+      });
 
       // ESC
       const escHandler = (e) => {
