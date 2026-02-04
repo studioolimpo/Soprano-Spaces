@@ -1173,6 +1173,41 @@ CODE MAP
       // Menu panel element (for hard isolation on iOS)
       const menuPanel = navEl.querySelector(".nav_mobile_menu_wrap") || null;
 
+      // Webflow Navbar elements (if this nav is a Webflow Navbar component)
+      const wfNavButton = navEl.querySelector(".w-nav-button") || null;
+      const wfNavMenu = navEl.querySelector(".w-nav-menu") || null;
+      const wfNavOverlay = navEl.querySelector(".w-nav-overlay") || null;
+
+      // IMPORTANT: your CSS animations (menuOpen/menuClose) are triggered by `.w-nav-button.w--open`
+      // and/or `.w-nav-menu` state. If we don't mirror Webflow's open classes/attributes,
+      // the page can shift (our JS) but the menu panel stays closed (CSS never triggers).
+      const setWebflowNavbarOpen = (isOpen) => {
+        try {
+          if (wfNavButton) {
+            wfNavButton.classList.toggle("w--open", !!isOpen);
+            wfNavButton.setAttribute("aria-expanded", isOpen ? "true" : "false");
+          }
+        } catch (_) {}
+
+        try {
+          if (wfNavMenu) {
+            wfNavMenu.classList.toggle("w--open", !!isOpen);
+          }
+        } catch (_) {}
+
+        try {
+          if (wfNavOverlay) {
+            // Webflow toggles overlay visibility; enforce deterministic state.
+            wfNavOverlay.style.display = isOpen ? "block" : "";
+          }
+        } catch (_) {}
+
+        try {
+          // Some Webflow CSS keys off the navbar root having `w--open`.
+          navEl.classList.toggle("w--open", !!isOpen);
+        } catch (_) {}
+      };
+
       // Hard-state helpers (avoid iOS 17 WebKit edge-cases with clip-path layers)
       const setPanelOpenState = (isOpen) => {
         if (!menuPanel) return;
@@ -1201,6 +1236,7 @@ CODE MAP
 
       // Init closed state once
       finalizePanelClosedState();
+      setWebflowNavbarOpen(false);
 
       const navBg = navEl.querySelector(CONFIG.menu.bgSelector) || document.querySelector(CONFIG.menu.bgSelector);
 
@@ -1424,6 +1460,9 @@ CODE MAP
           // Ensure panel becomes interactive immediately
           setPanelOpenState(true);
 
+          // Ensure Webflow navbar classes/attrs are in OPEN state (triggers CSS menu animation)
+          setWebflowNavbarOpen(true);
+
           try { Scroll.lock(); } catch {}
           // iOS: reduce click delay and improve touch responsiveness
           try {
@@ -1445,6 +1484,9 @@ CODE MAP
           setStatus("not-active");
           // Keep panel non-interactive ASAP (CSS will animate out)
           setPanelOpenState(false);
+
+          // Ensure Webflow navbar classes/attrs are in CLOSED state (triggers CSS menu close animation)
+          setWebflowNavbarOpen(false);
           shiftPageUp(CONFIG.menu.shiftCloseDelay);
 
           try { Scroll.unlock(); } catch {}
