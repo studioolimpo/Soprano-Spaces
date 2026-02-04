@@ -796,7 +796,7 @@ CODE MAP
   /* =========================
      LANGUAGE SWITCHER (Webflow i18n)
      - Forces hard reload when switching language for the same page
-     - Example: /studio -> /en/studio
+     - EN is primary (root), IT is secondary (/it)
      - Avoids Barba transitions by destroying Barba before navigation
   ========================= */
 
@@ -827,10 +827,12 @@ CODE MAP
       return;
     }
 
-    const currentLang = currentURL.pathname.startsWith("/en") ? "en" : "it";
-    const nextLang = nextURL.pathname.startsWith("/en") ? "en" : "it";
+    // EN è primary (root), IT è secondary (/it)
+    const currentLang = currentURL.pathname.startsWith("/it") ? "it" : "en";
+    const nextLang = nextURL.pathname.startsWith("/it") ? "it" : "en";
 
-    const normalizePath = (path) => path.replace(/^\/en/, "").replace(/\/$/, "");
+    // Normalizza rimuovendo /it e slash finale
+    const normalizePath = (path) => path.replace(/^\/it/, "").replace(/\/$/, "") || "/";
     const currentPathNormalized = normalizePath(currentURL.pathname);
     const nextPathNormalized = normalizePath(nextURL.pathname);
 
@@ -840,7 +842,7 @@ CODE MAP
     if (isSamePath && isLangChange) {
       e.preventDefault();
 
-      // Disattiva temporaneamente Barba per evitare transizione
+      // Disattiva Barba e forza reload completo
       try {
         if (window.barba && typeof window.barba.destroy === "function") {
           window.barba.destroy();
