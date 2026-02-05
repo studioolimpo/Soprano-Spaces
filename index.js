@@ -1,22 +1,27 @@
 /*
 index.js
-Soprano Spaces v1.0
+Soprano Spaces, v1.0
 
-- Registro animazioni hero per namespace
-- NO overlay, NO scale
-- Transizione pagine: opacita + micro elevate solo in uscita del container corrente
-- Crossfade reale current e next con Barba sync true
-- Fix robusto: NO flash / NO jump-to-top visibile / NO layer fixed che resta appeso
-- NEW: gestione divider reveal via data-reveal="divider"
+Core goals
+- Namespace-based hero animation registry
+- No overlays, no scaling, no gimmicks
+- Page transitions: opacity + subtle lift on the outgoing container only
+- True crossfade between current and next using Barba (sync: true)
+- Hardening: no flash, no visible jump-to-top, no stuck fixed layers
+- Divider reveals via data-reveal="divider"
+
+Credits
+Studio Olimpo – Above the ordinary
+https://www.studioolimpo.it
 */
 
 /*
 CODE MAP
-- Config + Registry
-- Dependencies + Logging
-- Global safety + Bootstrap
-- Scroll manager
-- Global helpers (same-page guard, cursor, signature)
+- Config and registries
+- Dependencies and logging
+- Global safety and bootstrap
+- Scroll manager (Lenis)
+- Global helpers (same-page guard, language switch, signature)
 - DOM helpers
 - Animations (hero, sections, dividers)
 - Loader
@@ -680,7 +685,7 @@ CODE MAP
   if (!barba) return console.warn("[CORE] Barba mancante");
   if (ScrollTrigger) gsap.registerPlugin(ScrollTrigger);
 
-  const log = (...args) => CONFIG.debug && console.log("[CORE]", ...args);
+  const log = (...args) => CONFIG.debug && console.debug("[CORE]", ...args);
 
   /* =========================
   GLOBAL SAFETY (avoid Barba crashes on optional component init)
@@ -1601,14 +1606,11 @@ CODE MAP
           try { e.stopPropagation(); } catch (_) {}
 
           // Start close immediately (keeps your theme restore + scroll unlock timings)
-          console.log("[NAV] closeNav() chiamato", performance.now());
           closeNav();
 
           const OVERLAP_DELAY = Number.isFinite(Number(CONFIG.menu.navTransitionOverlapDelay))
             ? Number(CONFIG.menu.navTransitionOverlapDelay)
             : 0.25;
-
-          console.log("[NAV] OVERLAP_DELAY =", OVERLAP_DELAY);
 
           // Prevent double navigation if something else triggers it
           if (navEl.__pendingNavCall && typeof navEl.__pendingNavCall.kill === "function") {
@@ -1616,7 +1618,6 @@ CODE MAP
           }
 
           const go = () => {
-            console.log("[NAV] barba.go() chiamato", performance.now());
             // Prefer Barba, fallback to hard navigation
             try {
               if (barba && typeof barba.go === "function") {
@@ -1918,25 +1919,6 @@ CODE MAP
       });
     }
 
-    // 2f) Barba timing logs (debug)
-    if (barba && barba.hooks && !window.__soBarbaTimingHooksBound) {
-      window.__soBarbaTimingHooksBound = true;
-
-      const _t = () => (performance.now ? performance.now().toFixed(1) : String(Date.now()));
-      const _logBarba = (label) => {
-        if (!CONFIG.debugBarbaTimings) return;
-        try { console.log(`[BARBA] ${label}`, _t()); } catch (_) {}
-      };
-
-      barba.hooks.before(() => _logBarba("before"));
-      barba.hooks.beforeLeave(() => _logBarba("beforeLeave"));
-      barba.hooks.leave(() => _logBarba("leave"));
-      barba.hooks.afterLeave(() => _logBarba("afterLeave"));
-      barba.hooks.beforeEnter(() => _logBarba("beforeEnter"));
-      barba.hooks.enter(() => _logBarba("enter"));
-      barba.hooks.afterEnter(() => _logBarba("afterEnter"));
-      barba.hooks.after(() => _logBarba("after"));
-    }
 
     // 3) Scroll engine (Lenis) + resume handlers
     Scroll.initLenis();
