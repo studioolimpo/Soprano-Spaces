@@ -1776,81 +1776,84 @@ CODE MAP
 
     const mm = gsap.matchMedia();
 
-    mm.add(
-      {
-        isDesktop: `(min-width: ${CONFIG.scrollDir.desktopMinWidth})`,
-        isMobile: `(max-width: calc(${CONFIG.scrollDir.desktopMinWidth} - 0.001px))`,
-      },
-      (ctx) => {
-        const onScroll = () => {
-          if (ticking) return;
-          ticking = true;
+    // DESKTOP ONLY: register scroll listener only on desktop breakpoint
+    // When viewport changes to mobile, GSAP matchMedia automatically cleans up
+    // and runs the cleanup function, removing the listener entirely.
+    mm.add(`(min-width: ${CONFIG.scrollDir.desktopMinWidth})`, () => {
+      const onScroll = () => {
+        if (ticking) return;
+        ticking = true;
 
-          requestAnimationFrame(() => {
-            const y = window.scrollY || 0;
+        requestAnimationFrame(() => {
+          const y = window.scrollY || 0;
 
-            // Pause guard: keep baseline in sync, no direction updates
-            if (isPaused) {
-              lastScrollY = y;
-              ticking = false;
-              return;
-            }
-
-            if (Math.abs(y - lastScrollY) < CONFIG.scrollDir.minDelta) {
-              ticking = false;
-              return;
-            }
-
-            const direction = y > lastScrollY ? "down" : "up";
-            const started = y > CONFIG.scrollDir.startedY;
-
+          // Pause guard: keep baseline in sync, no direction updates
+          if (isPaused) {
             lastScrollY = y;
-
-            if (CONFIG.scrollDir.setBodyAttributes !== false) {
-              try {
-                document.body.setAttribute("data-scrolling-direction", direction);
-                document.body.setAttribute("data-scrolling-started", String(started));
-              } catch (_) {}
-            }
-
-            // Desktop behavior only
-            if (ctx.conditions.isDesktop) {
-              // Hide only once when conditions are met
-              if (direction === "down" && started && !navHidden) {
-                gsap.to(desktopNav, {
-                  yPercent: CONFIG.scrollDir.desktopHideYPercent,
-                  duration: CONFIG.scrollDir.tweenDur,
-                  opacity: CONFIG.scrollDir.animateOpacity === false ? undefined : 0,
-                  ease: CONFIG.scrollDir.ease,
-                  overwrite: true,
-                });
-                navHidden = true;
-              }
-
-              // Show only when it was hidden
-              if (direction === "up" && navHidden) {
-                gsap.to(desktopNav, {
-                  yPercent: 0,
-                  opacity: CONFIG.scrollDir.animateOpacity === false ? undefined : 1,
-                  duration: CONFIG.scrollDir.tweenDur,
-                  ease: CONFIG.scrollDir.ease,
-                  overwrite: true,
-                });
-                navHidden = false;
-              }
-            }
-
             ticking = false;
-          });
-        };
+            return;
+          }
 
-        window.addEventListener("scroll", onScroll, { passive: true });
+          if (Math.abs(y - lastScrollY) < CONFIG.scrollDir.minDelta) {
+            ticking = false;
+            return;
+          }
 
-        return () => {
-          try { window.removeEventListener("scroll", onScroll); } catch (_) {}
-        };
-      }
-    );
+          const direction = y > lastScrollY ? "down" : "up";
+          const started = y > CONFIG.scrollDir.startedY;
+
+          lastScrollY = y;
+
+          if (CONFIG.scrollDir.setBodyAttributes !== false) {
+            try {
+              document.body.setAttribute("data-scrolling-direction", direction);
+              document.body.setAttribute("data-scrolling-started", String(started));
+            } catch (_) {}
+          }
+
+          // Hide only once when conditions are met
+          if (direction === "down" && started && !navHidden) {
+            gsap.to(desktopNav, {
+              yPercent: CONFIG.scrollDir.desktopHideYPercent,
+              duration: CONFIG.scrollDir.tweenDur,
+              opacity: CONFIG.scrollDir.animateOpacity === false ? undefined : 0,
+              ease: CONFIG.scrollDir.ease,
+              overwrite: true,
+            });
+            navHidden = true;
+          }
+
+          // Show only when it was hidden
+          if (direction === "up" && navHidden) {
+            gsap.to(desktopNav, {
+              yPercent: 0,
+              opacity: CONFIG.scrollDir.animateOpacity === false ? undefined : 1,
+              duration: CONFIG.scrollDir.tweenDur,
+              ease: CONFIG.scrollDir.ease,
+              overwrite: true,
+            });
+            navHidden = false;
+          }
+
+          ticking = false;
+        });
+      };
+
+      window.addEventListener("scroll", onScroll, { passive: true });
+
+      // Cleanup: runs when viewport switches to mobile OR on full cleanup
+      return () => {
+        try { window.removeEventListener("scroll", onScroll); } catch (_) {}
+
+        // Reset nav to visible state when leaving desktop
+        try {
+          gsap.killTweensOf(desktopNav);
+          gsap.set(desktopNav, { yPercent: 0, opacity: 1 });
+          navHidden = false;
+          lastScrollY = window.scrollY || 0;
+        } catch (_) {}
+      };
+    });
 
     const cleanup = () => {
       try { mm.revert(); } catch (_) {}
